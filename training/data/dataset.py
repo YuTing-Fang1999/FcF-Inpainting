@@ -1,24 +1,20 @@
-﻿﻿import os
+﻿import os
 import numpy as np
 import PIL.Image
 import json
 import torch
 import dnnlib
-import dnnlib
 import cv2
 from icecream import ic
-from . import mask_generator
+# from . import mask_generator
 import os.path as osp
 import matplotlib.pyplot as plt
 from icecream import ic
 import matplotlib.cm as cm
 import copy
 import albumentations as A
-try:
-    import pyspng
-except ImportError:
-    pyspng = None
 
+import csv
 #----------------------------------------------------------------------------
 
 class Dataset(torch.utils.data.Dataset):
@@ -122,9 +118,10 @@ class Dataset(torch.utils.data.Dataset):
 
     @property
     def resolution(self):
-        assert len(self.image_shape) == 3 # CHW
-        assert self.image_shape[1] == self.image_shape[2]
-        return self.image_shape[1]
+        # assert len(self.image_shape) == 3 # CHW
+        # assert self.image_shape[1] == self.image_shape[2]
+        # return self.image_shape[1]
+        return 256
 
     @property
     def label_shape(self):
@@ -162,34 +159,49 @@ class ImageDataset(Dataset):
         self.img_path = img_path
         self._type = 'dir'
         self.files = []
-
-        self._all_fnames = [os.path.relpath(os.path.join(root, fname), start=self.img_path) for root, _dirs, files in os.walk(self.img_path) for fname in files]
+        #-------------------------------------------------------------------------
+        self._param = []
+        # 開啟 CSV 檔案
+        with open(self.img_path+'/param_norm.csv', newline='') as csvfile:
+            # 讀取 CSV 檔案內容
+            self._param = np.array(list(csv.reader(csvfile))).astype(np.float)
+        #-------------------------------------------------------------------------
+        
+        self._all_fnames = [os.path.relpath(os.path.join(root, fname), start=self.img_path).replace("\\","/") for root, _dirs, files in os.walk(self.img_path) for fname in files]
         PIL.Image.init()
-        self._image_fnames = sorted(os.path.join(self.img_path,fname) for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
+        self._image_fnames = sorted(os.path.join(self.img_path,fname).replace("\\","/")  for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
         if len(self._image_fnames) == 0:
             raise IOError('No image files found in the specified path')
         
         self.files = []
         
         for f in self._image_fnames:
-            if not '_mask' in f:
+            if not 'noisy' in f:
                 self.files.append(f)
+        # print(self.files)
+
+        # 檔名依數字排列
+        def getint(name):
+            name = name.split('/')[-1]
+            name = name.split('.')[0]
+            _, num = name.split('_')
+            return int(num)
+        self.files = sorted(self.files, key=getint)
         
-        self.files = sorted(self.files)
 
         self.transform = A.Compose([
-        A.PadIfNeeded(min_height=self.sz, min_width=self.sz),
-        A.OpticalDistortion(),
-        A.RandomCrop(height=self.sz, width=self.sz),
-        A.HorizontalFlip(),
-        A.CLAHE(),
+        # A.PadIfNeeded(min_height=self.sz, min_width=self.sz),
+        # A.OpticalDistortion(),
+        # A.RandomCrop(height=self.sz, width=self.sz),
+        # A.HorizontalFlip(),
+        # A.CLAHE(),
         A.ToFloat()
     ])
 
         name = os.path.splitext(os.path.basename(self.img_path))[0]
         raw_shape = [len(self.files)] + list(self._load_raw_image(0).shape)
-        if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
-            raise IOError('Image files do not match the specified resolution')
+        # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
+        #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     def __len__(self):
@@ -227,16 +239,33 @@ class ImageDataset(Dataset):
 
     def _get_image(self, idx):
         fname = self.files[idx]
-        mask = mask_generator.generate_random_mask(s=self.sz, hole_range=[0.1,0.7])
-
-        rgb = np.array(self._load_image(fname)) # uint8
-        rgb = self.transform(image=rgb)['image']
-        rgb = np.rint(rgb * 255).clip(0, 255).astype(np.uint8)
+        name = fname.split('/')[-1].split('.')[0]
+        # scene_idx = int(name.split('_')[0])
+        param_idx = int(name.split('_')[1])
         
-        return rgb, mask
+        noisy_image = np.array(self._load_image(self.img_path+"/noisy.jpg")) # uint8 # HWC
+        noisy_image = self.transform(image=noisy_image)['image']
+        noisy_image = np.rint(noisy_image * 255).clip(0, 255).astype(np.uint8)
+        noisy_image = noisy_image.transpose(2,0,1) # HWC => CHW
+        
+        denoised_image = np.array(self._load_image(fname)) # uint8 # HWC
+        denoised_image = self.transform(image=denoised_image)['image']
+        denoised_image = np.rint(denoised_image * 255).clip(0, 255).astype(np.uint8)
+        denoised_image = denoised_image.transpose(2,0,1) # HWC => CHW
+        
+        C,H,W = noisy_image.shape
+        # get random ROI
+        down = np.random.randint(self.resolution, H)
+        right = np.random.randint(self.resolution, W)
+        # fix ROI
+        # down = 1300
+        # right = 1600
+        # CHW
+        denoised_image = denoised_image[ : , down-self.resolution:down, right-self.resolution:right]
+        noisy_image = noisy_image[ : , down-self.resolution:down, right-self.resolution:right]
+
+        return noisy_image, denoised_image, self._param[param_idx]
         
     def __getitem__(self, idx):
-        rgb, mask = self._get_image(idx) # modal, uint8 {0, 1}
-        rgb = rgb.transpose(2,0,1)
-
-        return rgb, mask, super().get_label(idx)
+        noisy_image, denoised_image, tuning_param = self._get_image(idx)
+        return noisy_image, denoised_image, tuning_param, super().get_label(idx)

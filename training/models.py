@@ -282,7 +282,7 @@ class EncoderBlock(torch.nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.resolution = resolution
-        self.img_channels = img_channels + 1
+        self.img_channels = img_channels # modify channels
         self.first_layer_idx = first_layer_idx
         self.architecture = architecture
         self.use_fp16 = use_fp16
@@ -531,7 +531,8 @@ class SynthesisBlock(torch.nn.Module):
         else:
             x = self.conv0(x, ws[0].clone(), fused_modconv=fused_modconv, **layer_kwargs)
             if len(self.ffc_skip) > 0:
-                mask = F.interpolate(mask, size=x_skip.shape[2:],)
+                if mask != None:
+                    mask = F.interpolate(mask, size=x_skip.shape[2:],)
                 z = x + x_skip
                 for fres in self.ffc_skip:
                     z = fres(z, mask)
@@ -638,7 +639,7 @@ class DiscriminatorBlock(torch.nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.resolution = resolution
-        self.img_channels = img_channels + 1
+        self.img_channels = img_channels # modify channels
         self.first_layer_idx = first_layer_idx
         self.architecture = architecture
         self.use_fp16 = use_fp16

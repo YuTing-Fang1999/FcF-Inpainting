@@ -1,4 +1,4 @@
-﻿﻿# Modified from https://github.com/NVlabs/stylegan2-ada-pytorch
+﻿# Modified from https://github.com/NVlabs/stylegan2-ada-pytorch
 
 import numpy as np
 import torch
@@ -15,6 +15,7 @@ class MappingNetwork(torch.nn.Module):
         c_dim,                      # Conditioning label (C) dimensionality, 0 = no label.
         w_dim,                      # Intermediate latent (W) dimensionality.
         num_ws,                     # Number of intermediate latents to output, None = do not broadcast.
+        input_param_dim = 512,
         num_layers      = 8,        # Number of mapping layers.
         embed_features  = None,     # Label embedding dimensionality, None = same as w_dim.
         layer_features  = None,     # Number of intermediate features in the mapping layers, None = same as w_dim.
@@ -37,7 +38,8 @@ class MappingNetwork(torch.nn.Module):
         if layer_features is None:
             layer_features = w_dim
         features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
-
+        features_list[0] = input_param_dim
+        
         if c_dim > 0:
             self.embed = FullyConnectedLayer(c_dim, embed_features)
         for idx in range(num_layers):
@@ -54,7 +56,7 @@ class MappingNetwork(torch.nn.Module):
         x = None
         with torch.autograd.profiler.record_function('input'):
             if self.z_dim > 0:
-                misc.assert_shape(z, [None, self.z_dim])
+                # misc.assert_shape(z, [None, self.z_dim])
                 x = normalize_2nd_moment(z.to(torch.float32))
             if self.c_dim > 0:
                 misc.assert_shape(c, [None, self.c_dim])
@@ -149,9 +151,9 @@ class EncoderNetwork(torch.nn.Module):
         x, const_e = self.b4(x, cmap)
         feats[4] = const_e
 
-        B, _ = x.shape
-        z = torch.randn((B, self.z_dim), requires_grad=False, dtype=x.dtype, device=x.device) ## Noise for Co-Modulation
-        return x, z, feats 
+        # B, _ = x.shape
+        # z = torch.randn((B, self.z_dim), requires_grad=False, dtype=x.dtype, device=x.device) ## Noise for Co-Modulation
+        return x, feats 
 
 #----------------------------------------------------------------------------
 
@@ -227,6 +229,7 @@ class Generator(torch.nn.Module):
         w_dim,                      # Intermediate latent (W) dimensionality.
         img_resolution,             # Output resolution.
         img_channels,               # Number of output color channels.
+        input_param_dim     = 7,
         encoder_kwargs      = {},   # Arguments for EncoderNetwork.
         mapping_kwargs      = {},   # Arguments for MappingNetwork.
         synthesis_kwargs    = {},   # Arguments for SynthesisNetwork.
@@ -240,13 +243,13 @@ class Generator(torch.nn.Module):
         self.encoder = EncoderNetwork(c_dim=c_dim, z_dim=z_dim, img_resolution=img_resolution, img_channels=img_channels, **encoder_kwargs)
         self.synthesis = SynthesisNetwork(z_dim=z_dim, w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
+        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, input_param_dim=input_param_dim, **mapping_kwargs)
 
-    def forward(self, img, c, fname=None, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
-        mask = img[:, -1].unsqueeze(1)
-        x_global, z, feats = self.encoder(img, c)
+    def forward(self, img, z, c, fname=None, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
+        # mask = img[:, 0].unsqueeze(1)
+        x_global, feats = self.encoder(img, c)
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        img = self.synthesis(x_global, mask, feats, ws, fname=fname, **synthesis_kwargs)
+        img = self.synthesis(x_global, None, feats, ws, fname=fname, **synthesis_kwargs)
         return img
 
 #----------------------------------------------------------------------------

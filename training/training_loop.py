@@ -1,4 +1,4 @@
-﻿﻿import os
+﻿import os
 import time
 import copy
 import json
@@ -30,83 +30,35 @@ from metrics.evaluation.evaluator import InpaintingEvaluator
 from metrics.evaluation.losses.base_loss import FIDScore
 from metrics.evaluation.utils import load_yaml
 
+from torch.nn.parameter import Parameter
 #----------------------------------------------------------------------------
 
-def setup_snapshot_image_grid(training_set, random_seed=0):
-    rnd = np.random.RandomState(random_seed)
-    gw = np.clip(5120 // training_set.image_shape[2], 0, 1)
-    gh = np.clip(5120 // training_set.image_shape[1], 10, 30)
-
-    # No labels => show random subset of training samples.
-    if not training_set.has_labels:
-        all_indices = list(range(len(training_set)))
-        rnd.shuffle(all_indices)
-        grid_indices = [all_indices[i % len(all_indices)] for i in range(gw * gh)]
-
-    else:
-        # Group training samples by label.
-        label_groups = dict() # label => [idx, ...]
-        for idx in range(len(training_set)):
-            label = tuple(training_set.get_details(idx).raw_label.flat[::-1])
-            if label not in label_groups:
-                label_groups[label] = []
-            label_groups[label].append(idx)
-
-        # Reorder.
-        label_order = sorted(label_groups.keys())
-        for label in label_order:
-            rnd.shuffle(label_groups[label])
-
-        # Organize into grid.
-        grid_indices = []
-        for y in range(gh):
-            label = label_order[y % len(label_order)]
-            indices = label_groups[label]
-            grid_indices += [indices[x % len(indices)] for x in range(gw)]
-            label_groups[label] = [indices[(i + gw) % len(indices)] for i in range(len(indices))]
-
+def setup_snapshot_image_grid(training_set):
+    grid_indices = [0,1,2,3]
+    # grid_indices = [i*199 for i in grid_indices]
     # Load data.
-    images, masks, labels = zip(*[training_set[i] for i in grid_indices])
-    return (gw, gh), np.stack(images), np.stack(masks), np.stack(labels)
+    noisy_image, denoised_image, tuning_param, labels = zip(*[training_set[i] for i in grid_indices])
+    return np.stack(noisy_image), np.stack(denoised_image), np.stack(tuning_param), np.stack(labels)
+
 
 #----------------------------------------------------------------------------
 
-def save_image_grid(img, erased_img, inv_mask, pred_img, fname, drange, grid_size):
-    lo, hi = (0, 255)
+def save_image_grid(imgs, fname, label, drange):
+    lo, hi = drange
+    imgs = np.asarray(imgs, dtype=np.float32)
+    imgs = (imgs - lo) * (255 / (hi - lo))
+    imgs = np.rint(imgs).clip(0, 255).astype(np.uint8)
 
-    model_lo, model_hi = drange
-    
-    img = np.asarray(img, dtype=np.float32)
-    img = (img - lo) * (255 / (hi - lo))
-    img = np.rint(img).clip(0, 255).astype(np.uint8)
-
-    inv_mask = np.squeeze(np.stack([inv_mask]*3, axis=1))
-    inv_mask = np.asarray(inv_mask, dtype=np.float32)
-    inv_mask = np.rint(inv_mask).clip(0, 1).astype(np.uint8)
-
-    erased_img = np.asarray(erased_img, dtype=np.float32)
-    erased_img = (erased_img - lo) * (255 / (hi - lo))
-    erased_img = np.rint(erased_img).clip(0, 255).astype(np.uint8)
-
-    pred_img = np.asarray(pred_img, dtype=np.float32)
-    pred_img = (pred_img - model_lo) * (255 / (model_hi - model_lo))
-    pred_img = np.rint(pred_img).clip(0, 255).astype(np.uint8)
-    
-    comp_img = img * (1 - inv_mask) + pred_img * inv_mask
-    f_img = np.concatenate((img, inv_mask * 255, erased_img, pred_img, comp_img), axis=1)
-
-    gw, gh = grid_size
-    gw *= f_img.shape[1] // 3
-    _N, C, H, W = img.shape
-    f_img = f_img.reshape(gh, gw, C, H, W)
-    f_img = f_img.transpose(0, 3, 1, 4, 2)
-    f_img = f_img.reshape(gh * H, gw * W, C)
+    _N, C, H, W = imgs.shape
+    imgs = imgs.transpose(0, 2, 3, 1) # HWC
 
     assert C in [1, 3]
-    if C == 1:
-        PIL.Image.fromarray(f_img[:, :, 0], 'L').save(fname + '.png')
-    if C == 3:
-        PIL.Image.fromarray(f_img, 'RGB').save(fname + '.png')
+    
+    for i in range(_N):
+        if C == 1:
+            PIL.Image.fromarray(imgs[i][:, :, 0], 'L').save("{}_{}_{}.png".format(fname, i, label))
+        if C == 3:
+            PIL.Image.fromarray(imgs[i], 'RGB').save("{}_{}_{}.png".format(fname, i, label))
 
 #----------------------------------------------------------------------------
 
@@ -146,6 +98,7 @@ def training_loop(
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
+    input_param_dim = 7
     # Initialize.
     start_time = time.time()
     device = torch.device('cuda', rank)
@@ -187,6 +140,15 @@ def training_loop(
         print(f'Resuming from "{resume_pkl}"')
         with dnnlib.util.open_url(resume_pkl) as f:
             resume_data = legacy.load_network_pkl(f)
+            
+        # perform model surgery
+        with torch.no_grad():
+            resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
+            resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim]) # param dim
+            resume_data['D'].b256.fromrgb.weight=Parameter(resume_data['D'].b256.fromrgb.weight[:,:3,...])
+            resume_data['G_ema'].encoder.b256.fromrgb.weight=Parameter(resume_data['G_ema'].encoder.b256.fromrgb.weight[:,:3,...])
+            resume_data['G_ema'].mapping.fc0.weight=Parameter(resume_data['G_ema'].mapping.fc0.weight[:, :input_param_dim]) # param dim
+
         for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
@@ -250,18 +212,23 @@ def training_loop(
     grid_c = None
     if rank == 0:
         print('Exporting sample images...')
-        grid_size, images, masks, labels = setup_snapshot_image_grid(training_set=training_set)
-        erased_images = images * (1 - masks)
-        grid_img = (torch.from_numpy(images).to(torch.float32) / 127.5 - 1).to(device)
-        grid_mask = torch.from_numpy(masks).to(torch.float32).to(device)
-        grid_erased_img = grid_img * (1 - grid_mask)
-        grid_img = grid_img.split(batch_gpu)
-        grid_mask = grid_mask.split(batch_gpu)
-        grid_erased_img = grid_erased_img.split(batch_gpu)
+        noisy_image, denoised_image, tuning_param, labels = setup_snapshot_image_grid(training_set=training_set)
+        print(noisy_image.shape, denoised_image.shape, tuning_param.shape)
+        print(tuning_param)
+        grid_noisy_img = (torch.from_numpy(noisy_image).to(torch.float32) / 127.5 - 1).to(device)
+        grid_denoised_img = (torch.from_numpy(denoised_image).to(torch.float32) / 127.5 - 1).to(device)
+        grid_tuning_param = torch.from_numpy(tuning_param).to(torch.float32).to(device)
+        
+        grid_noisy_img = grid_noisy_img.split(batch_gpu)
+        grid_denoised_img = grid_denoised_img.split(batch_gpu)
+        grid_tuning_param = grid_tuning_param.split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(torch.float32).to(device).split(batch_gpu)
-        pred_images = torch.cat([G_ema(img=torch.cat([0.5 - mask, erased_img], dim=1), c=c, noise_mode='const').cpu() for erased_img, mask, c in zip(grid_erased_img, grid_mask, grid_c)])
-        save_image_grid(images, erased_images, masks, pred_images.detach().numpy(), os.path.join(run_dir, 'run_init'), drange=[-1,1], grid_size=grid_size)
-   
+        
+        pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+        save_image_grid(noisy_image, os.path.join(run_dir, 'run_init'), label='NOISY', drange=[0,255])
+        save_image_grid(denoised_image, os.path.join(run_dir, 'run_init'),  label='GT', drange=[0,255])
+        save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, 'run_init'),  label='PRED', drange=[-1,1])
+    
     # Initialize logs.
     if rank == 0:
         print('Initializing logs...')
@@ -296,14 +263,12 @@ def training_loop(
     while True:
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
-            phase_real_imgs, phase_masks, phase_real_cs = next(training_set_iterator)
-            # phase_erased_img = ((phase_real_imgs * (1 - phase_masks)).to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
-            phase_real_img = (phase_real_imgs.to(device).to(torch.float32) / 127.5 - 1)
-            phase_inv_mask = (phase_masks.to(device).to(torch.float32))
-            phase_erased_img = phase_real_img * (1 - phase_inv_mask)
-            phase_erased_img = phase_erased_img.split(batch_gpu)
-            phase_real_img = phase_real_img.split(batch_gpu)
-            phase_inv_mask = phase_inv_mask.split(batch_gpu)
+            phase_noisy_imgs, phase_denoised_imgs, phase_tuning_param, phase_real_cs = next(training_set_iterator)
+            phase_noisy_imgs = (phase_noisy_imgs.to(device).to(torch.float32) / 127.5 - 1)
+            phase_denoised_imgs = (phase_denoised_imgs.to(device).to(torch.float32) / 127.5 - 1)
+            phase_noisy_imgs = phase_noisy_imgs.split(batch_gpu)
+            phase_denoised_imgs = phase_denoised_imgs.split(batch_gpu)
+            phase_tuning_param = phase_tuning_param.to(device).split(batch_gpu)
             phase_real_c = phase_real_cs.to(device).split(batch_gpu)
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
@@ -321,10 +286,10 @@ def training_loop(
             phase.module.requires_grad_(True)
 
             # Accumulate gradients over multiple rounds.
-            for round_idx, (erased_img, real_img, mask, real_c, gen_c) in enumerate(zip(phase_erased_img, phase_real_img, phase_inv_mask, phase_real_c, phase_gen_c)):
+            for round_idx, (noisy_img, denoised_img, tuning_param, real_c, gen_c) in enumerate(zip(phase_noisy_imgs, phase_denoised_imgs, phase_tuning_param, phase_real_c, phase_gen_c)):
                 sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
                 gain = phase.interval
-                loss.accumulate_gradients(phase=phase.name, erased_img=erased_img, real_img=real_img, mask=mask, real_c=real_c, gen_c=gen_c, sync=sync, gain=gain)
+                loss.accumulate_gradients(phase=phase.name, noisy_img=noisy_img, denoised_img=denoised_img, tuning_param=tuning_param, real_c=real_c, gen_c=gen_c, sync=sync, gain=gain)
 
             # Update weights.
             phase.module.requires_grad_(False)
@@ -409,31 +374,32 @@ def training_loop(
                     pickle.dump(snapshot_data, f)
 
 
-        if (snapshot_data is not None) and metrics and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-            msk_type = eval_img_data.split('/')[-1]
-            if rank == 0:
-                create_folders(msk_type)
-            label = torch.zeros([1, snapshot_data['G_ema'].c_dim]).to(device)
-            save_gen(snapshot_data['G_ema'], rank, num_gpus, device, eval_img_data, resolution, label, 1, msk_type)
-            if rank == 0:
-                eval_dataset = PrecomputedInpaintingResultsDataset(eval_img_data, f'fid_gens/{msk_type}', **eval_config.dataset_kwargs)
-                metrics = {
-                    'fid': FIDScore()
-                }
-                evaluator = InpaintingEvaluator(eval_dataset, scores=metrics, area_grouping=False,
-                                        integral_title='lpips_fid100_f1', integral_func=None,
-                                        **eval_config.evaluator_kwargs)
-                results = evaluator.dist_evaluate(device, num_gpus=1, rank=0)
-                fid_score = round(results[('fid', 'total')]['mean'], 5)
-                stats_metrics.update({'fid': fid_score})
-                print(Fore.GREEN + Style.BRIGHT + f' FID Score: {fid_score}')
+        # if (snapshot_data is not None) and metrics and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
+        #     msk_type = eval_img_data.split('/')[-1]
+        #     if rank == 0:
+        #         create_folders(msk_type)
+        #     label = torch.zeros([1, snapshot_data['G_ema'].c_dim]).to(device)
+        #     save_gen(snapshot_data['G_ema'], rank, num_gpus, device, eval_img_data, resolution, label, 1, msk_type)
+        #     if rank == 0:
+        #         eval_dataset = PrecomputedInpaintingResultsDataset(eval_img_data, f'fid_gens/{msk_type}', **eval_config.dataset_kwargs)
+        #         metrics = {
+        #             'fid': FIDScore()
+        #         }
+        #         evaluator = InpaintingEvaluator(eval_dataset, scores=metrics, area_grouping=False,
+        #                                 integral_title='lpips_fid100_f1', integral_func=None,
+        #                                 **eval_config.evaluator_kwargs)
+        #         results = evaluator.dist_evaluate(device, num_gpus=1, rank=0)
+        #         fid_score = round(results[('fid', 'total')]['mean'], 5)
+        #         stats_metrics.update({'fid': fid_score})
+        #         print(Fore.GREEN + Style.BRIGHT + f' FID Score: {fid_score}')
 
         del snapshot_data # conserve memory
 
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
-            pred_images = torch.cat([G_ema(img=torch.cat([0.5 - mask, erased_img], dim=1), c=c, noise_mode='const').cpu() for erased_img, mask, c in zip(grid_erased_img, grid_mask, grid_c)])
-            save_image_grid(images, erased_images, masks, pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'), drange=[-1,1], grid_size=grid_size)
+            pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+            save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
+
 
         # Collect statistics.
         for phase in phases:
