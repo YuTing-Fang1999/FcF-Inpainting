@@ -89,7 +89,7 @@ def training_loop(
     ada_interval            = 4,        # How often to perform ADA adjustment?
     ada_kimg                = 500,      # ADA adjustment speed, measured in how many kimg it takes for p to increase/decrease by one unit.
     total_kimg              = 25000,    # Total length of the training, measured in thousands of real images.
-    kimg_per_tick           = 4,        # Progress snapshot interval.
+    kimg_per_tick           = 1,        # Progress snapshot interval.
     image_snapshot_ticks    = 50,       # How often to save image snapshots? None = disable.
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = disable.
     resume_pkl              = None,     # Network pickle to resume training from.
@@ -99,6 +99,7 @@ def training_loop(
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
     input_param_dim = 7
+    best_loss_Gmain = 1e8
     # Initialize.
     start_time = time.time()
     device = torch.device('cuda', rank)
@@ -356,22 +357,6 @@ def training_loop(
                 print()
                 print(Fore.RED + 'Aborting...')
             
-        # Save network snapshot.
-        snapshot_pkl = None
-        snapshot_data = None
-        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-            snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-            for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
-                if module is not None:
-                    if num_gpus > 1:
-                        misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
-                    module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
-                snapshot_data[name] = module
-                del module # conserve memory
-            snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
-            if rank == 0:
-                with open(snapshot_pkl, 'wb') as f:
-                    pickle.dump(snapshot_data, f)
 
 
         # if (snapshot_data is not None) and metrics and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
@@ -392,8 +377,6 @@ def training_loop(
         #         fid_score = round(results[('fid', 'total')]['mean'], 5)
         #         stats_metrics.update({'fid': fid_score})
         #         print(Fore.GREEN + Style.BRIGHT + f' FID Score: {fid_score}')
-
-        del snapshot_data # conserve memory
 
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
@@ -417,6 +400,27 @@ def training_loop(
                 if 'Loss/D' in key or 'Loss/G' in key:
                     losses += [f"{key}: {(stats_dict[key]['mean']):<.4f}"]
             print(Fore.MAGENTA + Style.BRIGHT + ' '.join(losses))
+            
+        # Save network snapshot.
+        snapshot_pkl = None
+        snapshot_data = None
+        # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
+        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain and cur_tick > 0):
+            print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
+            best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
+            snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
+            for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
+                if module is not None:
+                    if num_gpus > 1:
+                        misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
+                    module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
+                snapshot_data[name] = module
+                del module # conserve memory
+            snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
+            if rank == 0:
+                with open(snapshot_pkl, 'wb') as f:
+                    pickle.dump(snapshot_data, f)
+        del snapshot_data # conserve memory
 
         # Update logs.
         timestamp = time.time()
