@@ -55,6 +55,10 @@ def setup_training_loop_kwargs(
     gamma           = None, # Override R1 gamma: <float>
     kimg            = None, # Override training duration: <int>
     batch           = None, # Override batch size: <int>
+    input_param_dim = None,
+    is_recommand    = False,
+    lr              = 1e-4,
+    run_dir         = None,
 
     # Discriminator augmentation.
     aug             = None, # Augmentation mode: 'ada' (default), 'noaug', 'fixed'
@@ -74,7 +78,9 @@ def setup_training_loop_kwargs(
     workers         = None, # Override number of DataLoader workers: <int>, default = 3
 ):
     args = dnnlib.EasyDict()
-
+    args.input_param_dim = input_param_dim
+    args.is_recommand = is_recommand
+    args.run_dir = run_dir
     # ------------------------------------------
     # General options: gpus, snap, metrics, seed
     # ------------------------------------------
@@ -176,11 +182,11 @@ def setup_training_loop_kwargs(
         spec.mb = max(min(gpus * min(4096 // res, 32), 64), gpus) # keep gpu memory consumption at bay
         spec.mbstd = min(spec.mb // gpus, 4) # other hyperparams behave more predictably if mbstd group size remains fixed
         spec.fmaps = 1 if res >= 512 else 0.5
-        spec.lrate = 0.001 if res >= 1024 else 0.001
+        spec.lrate = lr
         spec.gamma = 0.0002 * (res ** 2) / spec.mb # heuristic formula
         spec.ema = spec.mb * 10 / 32
 
-    args.G_kwargs = dnnlib.EasyDict(class_name='training.networks.Generator', z_dim=512, w_dim=512, encoder_kwargs=dnnlib.EasyDict(block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs = dnnlib.EasyDict()), mapping_kwargs=dnnlib.EasyDict(), synthesis_kwargs=dnnlib.EasyDict())
+    args.G_kwargs = dnnlib.EasyDict(class_name='training.networks.Generator', z_dim=512, w_dim=512, encoder_kwargs=dnnlib.EasyDict(block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs = dnnlib.EasyDict()), mapping_kwargs=dnnlib.EasyDict(), synthesis_kwargs=dnnlib.EasyDict(), input_param_dim=input_param_dim, is_recommand=is_recommand)
     args.D_kwargs = dnnlib.EasyDict(class_name='training.networks.Discriminator', block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     
     args.G_kwargs.synthesis_kwargs.channel_base = args.G_kwargs.encoder_kwargs.channel_base = args.D_kwargs.channel_base = int(spec.fmaps * 32768)
@@ -193,7 +199,8 @@ def setup_training_loop_kwargs(
     args.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=spec.lrate, betas=[0,0.99], eps=1e-8)
     args.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=spec.lrate, betas=[0,0.99], eps=1e-8)
     args.loss_kwargs = dnnlib.EasyDict(class_name='training.losses.loss.StyleGAN2Loss', r1_gamma=spec.gamma)
-
+    args.loss_kwargs.is_recommand = is_recommand
+    
     args.total_kimg = spec.kimg
     args.batch_size = spec.mb
     args.batch_gpu = spec.mb // spec.ref_gpus
@@ -427,6 +434,10 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--gamma', help='Override R1 gamma', type=float)
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')
 @click.option('--batch', help='Override batch size', type=int, metavar='INT')
+@click.option('--input_param_dim', help='要調的參數個數', type=int, metavar='INT')
+@click.option('--is_recommand', help='推薦模式', type=bool, metavar='BOOL', default=False)
+@click.option('--run_dir', help='run dir', metavar='DIR', default=None)
+@click.option('--lr', help='learning rate', type=float, default=1e-4)
 
 # Discriminator augmentation.
 @click.option('--aug', help='Augmentation mode [default: ada]', type=click.Choice(['noaug', 'ada', 'fixed']))
@@ -475,7 +486,11 @@ def main(ctx, outdir, dry_run, **config_kwargs):
     prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
     prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
     cur_run_id = max(prev_run_ids, default=-1) + 1
-    args.run_dir = os.path.join(outdir, f'{run_desc}')
+    if args.run_dir is None:
+        args.run_dir = os.path.join(outdir, f'{run_desc}')
+    else:
+        args.run_dir = os.path.join(outdir, f'{args.run_dir}')
+    print(args.run_dir)
     # assert not os.path.exists(args.run_dir)
 
     # Print options.

@@ -34,7 +34,7 @@ from torch.nn.parameter import Parameter
 #----------------------------------------------------------------------------
 
 def setup_snapshot_image_grid(training_set):
-    grid_indices = [0,1,2,3]
+    grid_indices = [0, 0, 0, 0]
     # grid_indices = [i*199 for i in grid_indices]
     # Load data.
     noisy_image, denoised_image, tuning_param, labels = zip(*[training_set[i] for i in grid_indices])
@@ -79,6 +79,8 @@ def training_loop(
     num_gpus                = 1,        # Number of GPUs participating in the training.
     rank                    = 0,        # Rank of the current process in [0, num_gpus[.
     batch_size              = 4,        # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
+    input_param_dim         = 512,
+    is_recommand            = False,
     batch_gpu               = 4,        # Number of samples processed at a time by one GPU.
     ema_kimg                = 10,       # Half-life of the exponential moving average (EMA) of generator weights.
     ema_rampup              = None,     # EMA ramp-up coefficient.
@@ -98,8 +100,8 @@ def training_loop(
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
-    input_param_dim = 7
     best_loss_Gmain = 1e8
+    best_rec_loss = 1e8
     # Initialize.
     start_time = time.time()
     device = torch.device('cuda', rank)
@@ -176,7 +178,7 @@ def training_loop(
     if rank == 0:
         print(Fore.CYAN + f'Distributing across {num_gpus} GPUs...')
     ddp_modules = dict()
-    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('D', D), (None, G_ema), ('augment_pipe', augment_pipe)]:
+    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn), ('D', D), (None, G_ema), ('augment_pipe', augment_pipe)]:
         if (num_gpus > 1) and (module is not None) and len(list(module.parameters())) != 0:
             module.requires_grad_(True)
             module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True)
@@ -189,18 +191,32 @@ def training_loop(
         print('Setting up training phases...')
     loss = dnnlib.util.construct_class_by_name(device=device, **ddp_modules, **loss_kwargs) # subclass of training.losses.loss.Loss
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
-        if reg_interval is None:
-            opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-            phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
-        else: # Lazy regularization.
-            mb_ratio = reg_interval / (reg_interval + 1)
-            opt_kwargs = dnnlib.EasyDict(opt_kwargs)
-            opt_kwargs.lr = opt_kwargs.lr * mb_ratio
-            opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-            opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-            phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
-            phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+    if is_recommand:
+        for name, module, opt_kwargs, reg_interval in [('G_tuning_fn', G.tuning_fn, G_opt_kwargs, G_reg_interval)]:
+            if reg_interval is None:
+                opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
+            else: # Lazy regularization.
+                mb_ratio = reg_interval / (reg_interval + 1)
+                opt_kwargs = dnnlib.EasyDict(opt_kwargs)
+                opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+                opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+                opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
+                phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+    else:
+        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
+            if reg_interval is None:
+                opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
+            else: # Lazy regularization.
+                mb_ratio = reg_interval / (reg_interval + 1)
+                opt_kwargs = dnnlib.EasyDict(opt_kwargs)
+                opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+                opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+                opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
+                phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
     for phase in phases:
         phase.start_event = None
         phase.end_event = None
@@ -212,6 +228,10 @@ def training_loop(
     grid_size = None
     grid_c = None
     if rank == 0:
+        if is_recommand:
+            ori_out = loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)
+            assert (ori_out == loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)).all()
+
         print('Exporting sample images...')
         noisy_image, denoised_image, tuning_param, labels = setup_snapshot_image_grid(training_set=training_set)
         print(noisy_image.shape, denoised_image.shape, tuning_param.shape)
@@ -378,11 +398,7 @@ def training_loop(
         #         stats_metrics.update({'fid': fid_score})
         #         print(Fore.GREEN + Style.BRIGHT + f' FID Score: {fid_score}')
 
-        # Save image snapshot.
-        if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
-            pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
-            save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
-
+        
 
         # Collect statistics.
         for phase in phases:
@@ -405,21 +421,39 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain and cur_tick > 0):
-            print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
-            best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
-            snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-            for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
-                if module is not None:
-                    if num_gpus > 1:
-                        misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
-                    module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
-                snapshot_data[name] = module
-                del module # conserve memory
-            snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
-            if rank == 0:
-                with open(snapshot_pkl, 'wb') as f:
-                    pickle.dump(snapshot_data, f)
+        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain) or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
+            # Save image snapshot.
+            # if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
+            if (rank == 0):
+                best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
+                best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
+                
+                if is_recommand:
+                    param = loss.G_tuning_fn(torch.ones([batch_size, 7], device=device).to(torch.float32))[0]
+                    print(param)
+                    assert (ori_out == loss.G_mapping(torch.ones([batch_size,7], device=device).to(torch.float32), None)).all()
+                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+                    save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
+                    with open(os.path.join(run_dir,'param.txt'), 'a') as f:
+                        param = [round(num, 4) for num in param.tolist()]
+                        f.write(str(param))
+                else:
+                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+                    save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
+
+                    print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
+                    snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
+                    for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
+                        if module is not None:
+                            if num_gpus > 1:
+                                misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
+                            module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
+                        snapshot_data[name] = module
+                        del module # conserve memory
+                    snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
+                
+                    with open(snapshot_pkl, 'wb') as f:
+                        pickle.dump(snapshot_data, f)
         del snapshot_data # conserve memory
 
         # Update logs.

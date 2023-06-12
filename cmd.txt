@@ -1,2 +1,17 @@
 pip install https://github.com/podgorskiy/dnnlib/releases/download/0.0.1/dnnlib-0.0.1-py3-none-any.whl
-python train.py --outdir=training_run --img_data=datasets/randomROI --gpus 1 --kimg 1000 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 2 --resume network-snapshot-000013.pkl --snap 1
+
+c7_region3_origin_place_pkl_20k_img
+python train.py --is_recommand True --input_param_dim 7 --lr 1e-3 --outdir=target_run --run_dir c7_region3_origin_place_pkl_20k_img --img_data=datasets/c7_gain3_origin --gpus 1 --kimg 3 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 2 --resume "training_run\1-gain3_train place.pkl\network-snapshot-000020.pkl" --snap 1 
+
+c7_region3_origin_place_pkl_52k_img
+
+c7_region3_origin_place_pkl_104k_img
+
+
+Train from gain2.pkl (100k img)
+
+Train from place.pkl (20k img)
+Train from place.pkl (50k img)
+Train from place.pkl (100k img)
+
+下次train時記得改map num layers

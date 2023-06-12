@@ -16,12 +16,13 @@ class Loss:
 #----------------------------------------------------------------------------
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G_encoder, G_mapping, G_synthesis, D, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2):
+    def __init__(self, device, G_encoder, G_mapping, G_synthesis, G_tuning_fn, D, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2,  is_recommand=False):
         super().__init__()
         self.device = device
         self.G_encoder = G_encoder
         self.G_mapping = G_mapping
         self.G_synthesis = G_synthesis
+        self.G_tuning_fn = G_tuning_fn
         self.D = D
         self.augment_pipe = augment_pipe
         self.style_mixing_prob = style_mixing_prob
@@ -31,11 +32,14 @@ class StyleGAN2Loss(Loss):
         self.pl_weight = pl_weight
         self.pl_mean = torch.zeros([], device=device)
         self.run_hrfpl = HRFPL(weight=5, weights_path=os.getcwd())
+        self.is_recommand = is_recommand
 
     def run_G(self, r_img, z, c, sync):
         with misc.ddp_sync(self.G_encoder, sync):
             x_global, feats = self.G_encoder(r_img, c)
         with misc.ddp_sync(self.G_mapping, sync):
+            if self.is_recommand:
+                z = self.G_tuning_fn(z.to(torch.float32)) ## 
             ws = self.G_mapping(z, c)
             # if self.style_mixing_prob > 0:
             #     with torch.autograd.profiler.record_function('style_mixing'):
@@ -53,13 +57,8 @@ class StyleGAN2Loss(Loss):
     
 
     def accumulate_gradients(self, phase, noisy_img, denoised_img, tuning_param, real_c, gen_c, sync, gain):
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
-        do_Gmain = (phase in ['Gmain', 'Gboth'])
-        do_Dmain = (phase in ['Dmain', 'Dboth'])
-        do_Dr1   = (phase in ['Dreg', 'Dboth']) and (self.r1_gamma != 0)
-        
-        # Gmain: Maximize logits for generated images.
-        if do_Gmain:
+        if self.is_recommand:
+            # Gmain: Maximize logits for generated images.
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 # g_inputs = torch.cat([0.5 - mask, erased_img], dim=1)
                 gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
@@ -67,12 +66,12 @@ class StyleGAN2Loss(Loss):
                 loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
                 loss_pl = self.run_hrfpl(gen_img, denoised_img)
                 
-                # if self.augment_pipe is not None:
-                #     gen_img = self.augment_pipe(gen_img)
+                if self.augment_pipe is not None:
+                    gen_img = self.augment_pipe(gen_img)
                 # d_inputs = torch.cat([0.5 - mask, gen_img], dim=1)
                 gen_logits = self.run_D(gen_img, gen_c, sync=False)
-                
                 loss_G =  torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
+                
                 loss_Gmain = loss_G.mean() + loss_rec + loss_pl
                 training_stats.report('Loss/G/loss', loss_G)
                 training_stats.report('Loss/G/rec_loss', loss_rec)
@@ -80,50 +79,80 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/G/pl_loss', loss_pl)
             with torch.autograd.profiler.record_function('Gmain_backward'):
                 loss_Gmain.mul(gain).backward()
-
-        # Dmain: Minimize logits for generated images.
-        loss_Dgen = 0
-        if do_Dmain:
-            with torch.autograd.profiler.record_function('Dgen_forward'):
-                # g_inputs = torch.cat([0.5 - mask, erased_img], dim=1)
-                gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
-                # gen_img = gen_img * mask + real_img * (1 - mask)
-                # if self.augment_pipe is not None:
-                #     gen_img = self.augment_pipe(gen_img)
-                # d_inputs = torch.cat([0.5 - mask, gen_img], dim=1)
-
-                gen_logits = self.run_D(gen_img, gen_c, sync=False) # Gets synced by loss_Dreal.
-                loss_Dgen = torch.nn.functional.softplus(gen_logits) # -log(1 - sigmoid(gen_logits))
-
-            with torch.autograd.profiler.record_function('Dgen_backward'):
-                loss_Dgen.mean().mul(gain).backward()
-
-        # Dmain: Maximize logits for real images.
-        # Dr1: Apply R1 regularization.
-        if do_Dmain or do_Dr1:
-            name = 'Dreal_Dr1' if do_Dmain and do_Dr1 else 'Dreal' if do_Dmain else 'Dr1'
-            with torch.autograd.profiler.record_function(name + '_forward'):
-                real_img_tmp = denoised_img.detach().requires_grad_(do_Dr1)
-                # if self.augment_pipe is not None:
-                #     real_img_tmp = self.augment_pipe(real_img_tmp)
-                # d_inputs = torch.cat([0.5 - mask, real_img_tmp], dim=1)
-                real_logits = self.run_D(real_img_tmp, real_c, sync=sync)
-
-                loss_Dreal = 0
-                if do_Dmain:
-                    loss_Dreal = torch.nn.functional.softplus(-real_logits) # -log(sigmoid(real_logits))
-                    training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)
                 
-                loss_Dr1 = 0
-                if do_Dr1:
-                    with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=[real_img_tmp], create_graph=True, only_inputs=True)[0]
-                    r1_penalty = r1_grads.square().sum([1,2,3])
-                    loss_Dr1 = r1_penalty * (self.r1_gamma / 2)
-                    training_stats.report('Loss/r1_penalty', r1_penalty)
-                    training_stats.report('Loss/D/reg', loss_Dr1)
+        else:
+        
+            assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
+            do_Gmain = (phase in ['Gmain', 'Gboth'])
+            do_Dmain = (phase in ['Dmain', 'Dboth'])
+            do_Dr1   = (phase in ['Dreg', 'Dboth']) and (self.r1_gamma != 0)
+            
+            # Gmain: Maximize logits for generated images.
+            if do_Gmain:
+                with torch.autograd.profiler.record_function('Gmain_forward'):
+                    # g_inputs = torch.cat([0.5 - mask, erased_img], dim=1)
+                    gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
+                    # gen_img = gen_img * mask + real_img * (1 - mask)
+                    loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
+                    loss_pl = self.run_hrfpl(gen_img, denoised_img)
+                    
+                    # if self.augment_pipe is not None:
+                    #     gen_img = self.augment_pipe(gen_img)
+                    # d_inputs = torch.cat([0.5 - mask, gen_img], dim=1)
+                    gen_logits = self.run_D(gen_img, gen_c, sync=False)
+                    
+                    loss_G =  torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
+                    loss_Gmain = loss_G.mean() + loss_rec + loss_pl
+                    training_stats.report('Loss/G/loss', loss_G)
+                    training_stats.report('Loss/G/rec_loss', loss_rec)
+                    training_stats.report('Loss/G/main_loss', loss_Gmain)
+                    training_stats.report('Loss/G/pl_loss', loss_pl)
+                with torch.autograd.profiler.record_function('Gmain_backward'):
+                    loss_Gmain.mul(gain).backward()
 
-            with torch.autograd.profiler.record_function(name + '_backward'):
-                (real_logits * 0 + loss_Dreal + loss_Dr1).mean().mul(gain).backward()
+            # Dmain: Minimize logits for generated images.
+            loss_Dgen = 0
+            if do_Dmain:
+                with torch.autograd.profiler.record_function('Dgen_forward'):
+                    # g_inputs = torch.cat([0.5 - mask, erased_img], dim=1)
+                    gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
+                    # gen_img = gen_img * mask + real_img * (1 - mask)
+                    # if self.augment_pipe is not None:
+                    #     gen_img = self.augment_pipe(gen_img)
+                    # d_inputs = torch.cat([0.5 - mask, gen_img], dim=1)
+
+                    gen_logits = self.run_D(gen_img, gen_c, sync=False) # Gets synced by loss_Dreal.
+                    loss_Dgen = torch.nn.functional.softplus(gen_logits) # -log(1 - sigmoid(gen_logits))
+
+                with torch.autograd.profiler.record_function('Dgen_backward'):
+                    loss_Dgen.mean().mul(gain).backward()
+
+            # Dmain: Maximize logits for real images.
+            # Dr1: Apply R1 regularization.
+            if do_Dmain or do_Dr1:
+                name = 'Dreal_Dr1' if do_Dmain and do_Dr1 else 'Dreal' if do_Dmain else 'Dr1'
+                with torch.autograd.profiler.record_function(name + '_forward'):
+                    real_img_tmp = denoised_img.detach().requires_grad_(do_Dr1)
+                    # if self.augment_pipe is not None:
+                    #     real_img_tmp = self.augment_pipe(real_img_tmp)
+                    # d_inputs = torch.cat([0.5 - mask, real_img_tmp], dim=1)
+                    real_logits = self.run_D(real_img_tmp, real_c, sync=sync)
+
+                    loss_Dreal = 0
+                    if do_Dmain:
+                        loss_Dreal = torch.nn.functional.softplus(-real_logits) # -log(sigmoid(real_logits))
+                        training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)
+                    
+                    loss_Dr1 = 0
+                    if do_Dr1:
+                        with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
+                            r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=[real_img_tmp], create_graph=True, only_inputs=True)[0]
+                        r1_penalty = r1_grads.square().sum([1,2,3])
+                        loss_Dr1 = r1_penalty * (self.r1_gamma / 2)
+                        training_stats.report('Loss/r1_penalty', r1_penalty)
+                        training_stats.report('Loss/D/reg', loss_Dr1)
+
+                with torch.autograd.profiler.record_function(name + '_backward'):
+                    (real_logits * 0 + loss_Dreal + loss_Dr1).mean().mul(gain).backward()
 
 #----------------------------------------------------------------------------

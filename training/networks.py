@@ -221,6 +221,27 @@ class SynthesisNetwork(torch.nn.Module):
 
 #----------------------------------------------------------------------------
 
+class ElementwiseLinear(nn.Module):
+    def __init__(self, input_size: int) -> None:
+        super(ElementwiseLinear, self).__init__()
+        self.fc1 = nn.Linear(input_size, input_size)
+        self.fc2 = nn.Linear(input_size, input_size)
+        self.fc3 = nn.Linear(input_size, input_size)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.fc2(x)
+        x = self.fc3(x)
+        x = torch.sigmoid(x)  # 映射到 [0, 1]
+        return x
+
+    #     # w is the learnable weight of this layer module
+    #     self.weight = nn.Parameter(torch.rand(input_size), requires_grad=True)
+
+    # def forward(self, x: torch.tensor) -> torch.tensor:
+    #     # simple elementwise multiplication
+    #     return self.weight * x
+
 @persistence.persistent_class
 class Generator(torch.nn.Module):
     def __init__(self,
@@ -233,6 +254,7 @@ class Generator(torch.nn.Module):
         encoder_kwargs      = {},   # Arguments for EncoderNetwork.
         mapping_kwargs      = {},   # Arguments for MappingNetwork.
         synthesis_kwargs    = {},   # Arguments for SynthesisNetwork.
+        is_recommand = False
     ):
         super().__init__()
         self.z_dim = z_dim
@@ -244,10 +266,13 @@ class Generator(torch.nn.Module):
         self.synthesis = SynthesisNetwork(z_dim=z_dim, w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, input_param_dim=input_param_dim, **mapping_kwargs)
-
+        self.is_recommand = is_recommand
+        self.tuning_fn = ElementwiseLinear(input_param_dim)
     def forward(self, img, z, c, fname=None, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         # mask = img[:, 0].unsqueeze(1)
         x_global, feats = self.encoder(img, c)
+        if self.is_recommand:
+            z = self.tuning_fn(z.to(torch.float32)) ##
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
         img = self.synthesis(x_global, None, feats, ws, fname=fname, **synthesis_kwargs)
         return img
