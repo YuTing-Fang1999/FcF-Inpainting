@@ -91,7 +91,7 @@ def training_loop(
     ada_interval            = 4,        # How often to perform ADA adjustment?
     ada_kimg                = 500,      # ADA adjustment speed, measured in how many kimg it takes for p to increase/decrease by one unit.
     total_kimg              = 25000,    # Total length of the training, measured in thousands of real images.
-    kimg_per_tick           = 1,        # Progress snapshot interval.
+    kimg_per_tick           = 0.2,        # Progress snapshot interval.
     image_snapshot_ticks    = 50,       # How often to save image snapshots? None = disable.
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = disable.
     resume_pkl              = None,     # Network pickle to resume training from.
@@ -421,6 +421,8 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
+        print('best_loss_Gmain', best_loss_Gmain, 'best_rec_loss', best_rec_loss)
+        print("Loss/G/main_loss", stats_dict["Loss/G/main_loss"]['mean'], "Loss/G/rec_loss", stats_dict["Loss/G/rec_loss"]['mean'])
         if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain) or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
             # Save image snapshot.
             # if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
@@ -429,12 +431,12 @@ def training_loop(
                 best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
                 
                 if is_recommand:
-                    param = loss.G_tuning_fn(torch.ones([batch_size, 7], device=device).to(torch.float32))[0]
+                    param = loss.G_tuning_fn(torch.ones([batch_size, input_param_dim], device=device).to(torch.float32))[0]
                     print(param)
-                    assert (ori_out == loss.G_mapping(torch.ones([batch_size,7], device=device).to(torch.float32), None)).all()
+                    assert (ori_out == loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)).all()
                     pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
-                    with open(os.path.join(run_dir,'param.txt'), 'a') as f:
+                    with open(os.path.join(run_dir, run_dir.split("\\")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
                         param = [round(num, 4) for num in param.tolist()]
                         f.write(str(param))
                 else:

@@ -73,6 +73,7 @@ class StyleGAN2Loss(Loss):
                 loss_G =  torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
                 
                 loss_Gmain = loss_G.mean() + loss_rec + loss_pl
+                # loss_Gmain = loss_pl
                 training_stats.report('Loss/G/loss', loss_G)
                 training_stats.report('Loss/G/rec_loss', loss_rec)
                 training_stats.report('Loss/G/main_loss', loss_Gmain)

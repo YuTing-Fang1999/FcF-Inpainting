@@ -13,6 +13,7 @@ from icecream import ic
 import matplotlib.cm as cm
 import copy
 import albumentations as A
+from re import findall
 
 import csv
 #----------------------------------------------------------------------------
@@ -174,18 +175,20 @@ class ImageDataset(Dataset):
             raise IOError('No image files found in the specified path')
         
         self.files = []
-        
+        self.noisy_img_path = ""
         for f in self._image_fnames:
             if not 'noisy' in f:
                 self.files.append(f)
+            else:
+                self.noisy_img_path = f
         # print(self.files)
 
         # 檔名依數字排列
         def getint(name):
-            name = name.split('/')[-1]
-            name = name.split('.')[0]
-            _, num = name.split('_')
-            return int(num)
+            # name = name.split('/')[-1]
+            # name = name.split('.')[0]
+            # _, num = name.split('_')
+            return int(findall(r"_(\d+)", name)[0])
         self.files = sorted(self.files, key=getint)
         
 
@@ -239,11 +242,11 @@ class ImageDataset(Dataset):
 
     def _get_image(self, idx):
         fname = self.files[idx]
-        name = fname.split('/')[-1].split('.')[0]
-        # scene_idx = int(name.split('_')[0])
-        param_idx = int(name.split('_')[1])
+        # name = fname.split('/')[-1].split('.')[0]
+        # # scene_idx = int(name.split('_')[0])
+        param_idx = int(findall(r"_(\d+)", fname)[0])
         
-        noisy_image = np.array(self._load_image(self.img_path+"/noisy.jpg")) # uint8 # HWC
+        noisy_image = np.array(self._load_image(self.noisy_img_path)) # uint8 # HWC
         noisy_image = self.transform(image=noisy_image)['image']
         noisy_image = np.rint(noisy_image * 255).clip(0, 255).astype(np.uint8)
         noisy_image = noisy_image.transpose(2,0,1) # HWC => CHW
