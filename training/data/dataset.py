@@ -206,6 +206,8 @@ class ImageDataset(Dataset):
         # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
         #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+        self.noisy_img = np.array(self._load_image(self.noisy_img_path))
+        self.H, self.W, C = self.noisy_img.shape
 
     def __len__(self):
         return len(self.files)
@@ -246,26 +248,27 @@ class ImageDataset(Dataset):
         # # scene_idx = int(name.split('_')[0])
         param_idx = int(findall(r"_(\d+)", fname)[0])
         
-        noisy_image = np.array(self._load_image(self.noisy_img_path)) # uint8 # HWC
+        # get random ROI
+        down = np.random.randint(self.resolution, self.H)
+        right = np.random.randint(self.resolution, self.W)
+        # fix ROI
+        # down = 1300
+        # right = 1600
+        # CHW
+        
+        noisy_image = self.noisy_img # uint8 # HWC
+        noisy_image = noisy_image[down-self.resolution:down, right-self.resolution:right, : ]
+        # noisy_image = self.noisy_img
         noisy_image = self.transform(image=noisy_image)['image']
         noisy_image = np.rint(noisy_image * 255).clip(0, 255).astype(np.uint8)
         noisy_image = noisy_image.transpose(2,0,1) # HWC => CHW
         
         denoised_image = np.array(self._load_image(fname)) # uint8 # HWC
+        denoised_image = denoised_image[down-self.resolution:down, right-self.resolution:right, : ]
+        # denoised_image = self.images[idx]
         denoised_image = self.transform(image=denoised_image)['image']
         denoised_image = np.rint(denoised_image * 255).clip(0, 255).astype(np.uint8)
         denoised_image = denoised_image.transpose(2,0,1) # HWC => CHW
-        
-        C,H,W = noisy_image.shape
-        # get random ROI
-        down = np.random.randint(self.resolution, H)
-        right = np.random.randint(self.resolution, W)
-        # fix ROI
-        # down = 1300
-        # right = 1600
-        # CHW
-        denoised_image = denoised_image[ : , down-self.resolution:down, right-self.resolution:right]
-        noisy_image = noisy_image[ : , down-self.resolution:down, right-self.resolution:right]
 
         return noisy_image, denoised_image, self._param[param_idx]
         

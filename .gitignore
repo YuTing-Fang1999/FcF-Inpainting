@@ -9,8 +9,9 @@ sample_collection.py
 extras/
 **.DS_Store
 Texture-Inpaint
-training_run
-target_run
-datasets
+
+training_run/*
+target_run/*
+datasets/*
 ade20k
 *.pkl

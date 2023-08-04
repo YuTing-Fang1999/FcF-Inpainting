@@ -63,6 +63,7 @@ def get_plugin(module_name, sources, **build_kwargs):
             if compiler_bindir is None:
                 raise RuntimeError(f'Could not find MSVC/GCC/CLANG installation on this computer. Check _find_compiler_bindir() in "{__file__}".')
             os.environ['PATH'] += ';' + compiler_bindir
+            # print(f'Added "{compiler_bindir}" to PATH.')
 
         # Compile and load.
         verbose_build = (verbosity == 'full')
@@ -89,7 +90,7 @@ def get_plugin(module_name, sources, **build_kwargs):
                     hash_md5.update(f.read())
             build_dir = torch.utils.cpp_extension._get_build_directory(module_name, verbose=verbose_build) # pylint: disable=protected-access
             digest_build_dir = os.path.join(build_dir, hash_md5.hexdigest())
-
+            print('name', module_name,'digest_sources', digest_sources, 'build_dir', build_dir, 'verbose_build', verbose_build, 'build_kwargs', build_kwargs)
             if not os.path.isdir(digest_build_dir):
                 os.makedirs(digest_build_dir, exist_ok=True)
                 baton = FileBaton(os.path.join(digest_build_dir, 'lock'))

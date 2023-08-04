@@ -32,6 +32,7 @@ def modulated_conv2d(
     flip_weight     = True,     # False = convolution, True = correlation (matches torch.nn.functional.conv2d).
     fused_modconv   = True,     # Perform modulation, convolution, and demodulation as a single fused operation?
 ):
+    noise = None
     batch_size = x.shape[0]
     out_channels, in_channels, kh, kw = weight.shape
     misc.assert_shape(weight, [out_channels, in_channels, kh, kw]) # [OIkk]
@@ -364,7 +365,7 @@ class SynthesisLayer(torch.nn.Module):
         super().__init__()
         self.resolution = resolution
         self.up = up
-        self.use_noise = use_noise
+        self.use_noise = False
         self.activation = activation
         self.conv_clamp = conv_clamp
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
