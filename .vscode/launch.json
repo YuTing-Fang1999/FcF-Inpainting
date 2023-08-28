@@ -1,0 +1,44 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--is_recommand",
+                "True",
+                "--input_param_dim",
+                "12",
+                "--lr",
+                "1e-3",
+                "--outdir=target_run",
+                "--run_dir",
+                "c7_region2_use_region1_from_places_pkl_35K",
+                "--img_data=datasets/region0_target_align",
+                "--gpus",
+                "1",
+                "--kimg",
+                "20",
+                "--gamma",
+                "10",
+                "--aug",
+                "noaug",
+                "--metrics",
+                "True",
+                "--eval_img_data",
+                "None",
+                "--batch",
+                "16",
+                "--snap",
+                "1"
+            ]
+        }
+    ]
+}

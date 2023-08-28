@@ -269,8 +269,10 @@ class ImageDataset(Dataset):
         denoised_image = self.transform(image=denoised_image)['image']
         denoised_image = np.rint(denoised_image * 255).clip(0, 255).astype(np.uint8)
         denoised_image = denoised_image.transpose(2,0,1) # HWC => CHW
-
-        return noisy_image, denoised_image, self._param[param_idx]
+        
+        p = np.concatenate([self._param[param_idx], [down/self.H, right/self.W]], axis=0)
+        
+        return noisy_image, denoised_image, p
         
     def __getitem__(self, idx):
         noisy_image, denoised_image, tuning_param = self._get_image(idx)

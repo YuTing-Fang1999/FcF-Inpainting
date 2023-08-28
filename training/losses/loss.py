@@ -39,7 +39,8 @@ class StyleGAN2Loss(Loss):
             x_global, feats = self.G_encoder(r_img, c)
         with misc.ddp_sync(self.G_mapping, sync):
             if self.is_recommand:
-                z = self.G_tuning_fn(z.to(torch.float32)) ## 
+                z_tune = self.G_tuning_fn(z[:, :-2].to(torch.float32)) ## 
+                z = torch.cat((z_tune, z[:, -2:]), 1)
             ws = self.G_mapping(z, c)
             # if self.style_mixing_prob > 0:
             #     with torch.autograd.profiler.record_function('style_mixing'):

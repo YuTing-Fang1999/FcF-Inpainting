@@ -147,10 +147,10 @@ def training_loop(
         # perform model surgery
         with torch.no_grad():
             resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
-            resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim]) # param dim
+            resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
             resume_data['D'].b256.fromrgb.weight=Parameter(resume_data['D'].b256.fromrgb.weight[:,:3,...])
             resume_data['G_ema'].encoder.b256.fromrgb.weight=Parameter(resume_data['G_ema'].encoder.b256.fromrgb.weight[:,:3,...])
-            resume_data['G_ema'].mapping.fc0.weight=Parameter(resume_data['G_ema'].mapping.fc0.weight[:, :input_param_dim]) # param dim
+            resume_data['G_ema'].mapping.fc0.weight=Parameter(resume_data['G_ema'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
 
         for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
@@ -228,27 +228,28 @@ def training_loop(
     grid_size = None
     grid_c = None
     if rank == 0:
-        if is_recommand:
-            ori_out = loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)
-            assert (ori_out == loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)).all()
-
         print('Exporting sample images...')
         noisy_image, denoised_image, tuning_param, labels = setup_snapshot_image_grid(training_set=training_set)
         print(noisy_image.shape, denoised_image.shape, tuning_param.shape)
-        print(tuning_param)
-        grid_noisy_img = (torch.from_numpy(noisy_image).to(torch.float32) / 127.5 - 1).to(device)
-        grid_denoised_img = (torch.from_numpy(denoised_image).to(torch.float32) / 127.5 - 1).to(device)
-        grid_tuning_param = torch.from_numpy(tuning_param).to(torch.float32).to(device)
+        sample_noisy_img = (torch.from_numpy(noisy_image).to(torch.float32) / 127.5 - 1).to(device)
+        sample_denoised_img = (torch.from_numpy(denoised_image).to(torch.float32) / 127.5 - 1).to(device)
+        sample_tuning_param = torch.from_numpy(tuning_param).to(torch.float32).to(device)
         
-        grid_noisy_img = grid_noisy_img.split(batch_gpu)
-        grid_denoised_img = grid_denoised_img.split(batch_gpu)
-        grid_tuning_param = grid_tuning_param.split(batch_gpu)
+        sample_noisy_img = sample_noisy_img.split(batch_gpu)
+        sample_denoised_img = sample_denoised_img.split(batch_gpu)
+        sample_tuning_param = sample_tuning_param.split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(torch.float32).to(device).split(batch_gpu)
         
-        pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+        pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
         save_image_grid(noisy_image, os.path.join(run_dir, 'run_init'), label='NOISY', drange=[0,255])
         save_image_grid(denoised_image, os.path.join(run_dir, 'run_init'),  label='GT', drange=[0,255])
         save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, 'run_init'),  label='PRED', drange=[-1,1])
+        
+        if is_recommand:
+            print("sample_tuning_param", sample_tuning_param)
+            ori_out = loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)
+            assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
+
     
     # Initialize logs.
     if rank == 0:
@@ -315,9 +316,9 @@ def training_loop(
             # Update weights.
             phase.module.requires_grad_(False)
             with torch.autograd.profiler.record_function(phase.name + '_opt'):
-                for param in phase.module.parameters():
-                    if param.grad is not None:
-                        misc.nan_to_num(param.grad, nan=0, posinf=1e5, neginf=-1e5, out=param.grad)
+                for param_tuned in phase.module.parameters():
+                    if param_tuned.grad is not None:
+                        misc.nan_to_num(param_tuned.grad, nan=0, posinf=1e5, neginf=-1e5, out=param_tuned.grad)
                 phase.opt.step()
             if phase.end_event is not None:
                 phase.end_event.record(torch.cuda.current_stream(device))
@@ -431,16 +432,15 @@ def training_loop(
                 best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
                 
                 if is_recommand:
-                    param = loss.G_tuning_fn(torch.ones([batch_size, input_param_dim], device=device).to(torch.float32))[0]
-                    print(param)
-                    assert (ori_out == loss.G_mapping(torch.ones([batch_size,input_param_dim], device=device).to(torch.float32), None)).all()
-                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+                    param_tuned = loss.G_tuning_fn(sample_tuning_param[0][:, :-2])
+                    assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
+                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
                     with open(os.path.join(run_dir, run_dir.split("\\")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
-                        param = [round(num, 4) for num in param.tolist()]
-                        f.write(str(param))
+                        param_tuned = [round(num, 4) for num in param_tuned[0][:input_param_dim].tolist()]
+                        f.write(str(param_tuned))
                 else:
-                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(grid_noisy_img, grid_tuning_param, grid_c)])
+                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
 
                     print('save best model', stats_dict["Loss/G/main_loss"]['mean'])

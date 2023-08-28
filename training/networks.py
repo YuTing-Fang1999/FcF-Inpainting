@@ -221,13 +221,13 @@ class SynthesisNetwork(torch.nn.Module):
 
 #----------------------------------------------------------------------------
 
-class ElementwiseLinear(nn.Module):
+class TuningFN(nn.Module):
     def __init__(self, input_size: int) -> None:
-        super(ElementwiseLinear, self).__init__()
+        super(TuningFN, self).__init__()
         self.fc1 = nn.Linear(input_size, input_size)
         self.fc2 = nn.Linear(input_size, input_size)
         self.fc3 = nn.Linear(input_size, input_size)
-
+        
     def forward(self, x):
         x = self.fc1(x)
         x = self.fc2(x)
@@ -250,7 +250,7 @@ class Generator(torch.nn.Module):
         w_dim,                      # Intermediate latent (W) dimensionality.
         img_resolution,             # Output resolution.
         img_channels,               # Number of output color channels.
-        input_param_dim     = 7,
+        input_param_dim     = 512,
         encoder_kwargs      = {},   # Arguments for EncoderNetwork.
         mapping_kwargs      = {},   # Arguments for MappingNetwork.
         synthesis_kwargs    = {},   # Arguments for SynthesisNetwork.
@@ -265,14 +265,19 @@ class Generator(torch.nn.Module):
         self.encoder = EncoderNetwork(c_dim=c_dim, z_dim=z_dim, img_resolution=img_resolution, img_channels=img_channels, **encoder_kwargs)
         self.synthesis = SynthesisNetwork(z_dim=z_dim, w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, input_param_dim=input_param_dim, **mapping_kwargs)
+        # encode z to w, z contains the position information, so we need to add 2 more dimensions
+        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, input_param_dim=input_param_dim+2, **mapping_kwargs)
+        
         self.is_recommand = is_recommand
-        self.tuning_fn = ElementwiseLinear(input_param_dim)
+        self.tuning_fn = TuningFN(input_param_dim) 
     def forward(self, img, z, c, fname=None, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         # mask = img[:, 0].unsqueeze(1)
         x_global, feats = self.encoder(img, c)
         if self.is_recommand:
-            z = self.tuning_fn(z.to(torch.float32)) ##
+            # add position in th z vector
+            z_tune = self.tuning_fn(z[:, :-2].to(torch.float32)) ## 
+            z = torch.cat((z_tune, z[:, -2:]), 1)
+            
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
         img = self.synthesis(x_global, None, feats, ws, fname=fname, **synthesis_kwargs)
         return img
