@@ -13,19 +13,23 @@
             "justMyCode": true,
             "args": [
                 "--is_recommand",
-                "True",
+                "False", // False代表訓練，True代表推薦
+                "--kimg",
+                "50", // 訓練幾k張圖片，訓練50k，推薦3k
+                "--resume",
+                "places.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--img_data=datasets/region0", // 資料集路徑
+                "--outdir=training_run/region0", // 訓練結果的輸出資料夾
+                "--batch",
+                "16", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                
+                // 下面這些參數可以不用調
                 "--input_param_dim",
-                "12",
+                "12", // 輸入參數的維度(要推薦幾個參數)
                 "--lr",
                 "1e-3",
-                "--outdir=target_run",
-                "--run_dir",
-                "c7_region2_use_region1_from_places_pkl_35K",
-                "--img_data=datasets/region0_target_align",
                 "--gpus",
                 "1",
-                "--kimg",
-                "20",
                 "--gamma",
                 "10",
                 "--aug",
@@ -34,8 +38,44 @@
                 "True",
                 "--eval_img_data",
                 "None",
+                "--snap",
+                "1"
+            ]
+        },
+        {
+            "name": "Recommand",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--is_recommand",
+                "True", // False代表訓練，True代表推薦
+                "--kimg",
+                "3", // 訓練幾k張圖片，訓練50k，推薦3k
+                "--resume",
+                "places.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--img_data=datasets/region0", // 資料集路徑
+                "--outdir=training_run/region0", // 訓練結果的輸出資料夾
                 "--batch",
-                "16",
+                "16", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                
+                // 下面這些參數可以不用調
+                "--input_param_dim",
+                "12", // 輸入參數的維度(要推薦幾個參數)
+                "--lr",
+                "1e-3",
+                "--gpus",
+                "1",
+                "--gamma",
+                "10",
+                "--aug",
+                "noaug",
+                "--metrics",
+                "True",
+                "--eval_img_data",
+                "None",
                 "--snap",
                 "1"
             ]

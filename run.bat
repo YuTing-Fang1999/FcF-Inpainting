@@ -40,3 +40,4 @@
 
 python train.py --is_recommand True --input_param_dim 12 --lr 1e-3 --outdir=target_run --run_dir c7_region2_use_region1_from_places_pkl_35K --img_data=datasets/region0_target_align --gpus 1 --kimg 3 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 16 --snap 1 
 python train.py --is_recommand False --input_param_dim 12 --lr 1e-3 --outdir=training_run --run_dir c7_region2_use_region1_from_places_pkl_35K --img_data=datasets/region0_train_align --gpus 1 --kimg 50 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 16 --snap 1 
+python train.py --is_recommand True --input_param_dim 12 --lr 1e-3 --outdir=training_run --run_dir c7_region2_use_region1_from_places_pkl_35K --img_data=datasets/region0_train_align --gpus 1 --kimg 50 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 16 --snap 1 

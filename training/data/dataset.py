@@ -153,43 +153,54 @@ class ImageDataset(Dataset):
     
     def __init__(self,
         img_path,                   # Path to images.
+        is_recommand    = False,
+        input_param_dim = 512,
         resolution      = None,     # Ensure specific resolution, None = highest available.
         **super_kwargs,             # Additional arguments for the Dataset base class.
     ):
+        self.is_recommand = is_recommand
+        self.input_param_dim = input_param_dim
         self.sz = resolution
         self.img_path = img_path
         self._type = 'dir'
-        self.files = []
         #-------------------------------------------------------------------------
-        self._param = []
-        # 開啟 CSV 檔案
-        with open(self.img_path+'/param_norm.csv', newline='') as csvfile:
-            # 讀取 CSV 檔案內容
-            self._param = np.array(list(csv.reader(csvfile))).astype(np.float)
+        if self.is_recommand:
+            self._param = np.array([np.ones(self.input_param_dim)]).astype(np.float32)
+        else:
+            # 開啟 CSV 檔案
+            with open(self.img_path+'/param_norm.csv', newline='') as csvfile:
+                # 讀取 CSV 檔案內容
+                self._param = np.array(list(csv.reader(csvfile))).astype(np.float32)
         #-------------------------------------------------------------------------
         
         self._all_fnames = [os.path.relpath(os.path.join(root, fname), start=self.img_path).replace("\\","/") for root, _dirs, files in os.walk(self.img_path) for fname in files]
         PIL.Image.init()
-        self._image_fnames = sorted(os.path.join(self.img_path,fname).replace("\\","/")  for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
-        if len(self._image_fnames) == 0:
+        self._all_image_fnames = sorted(os.path.join(self.img_path,fname).replace("\\","/")  for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
+        if len(self._all_image_fnames) == 0:
             raise IOError('No image files found in the specified path')
         
-        self.files = []
+        self.target_img_fnames = []
         self.noisy_img_path = ""
-        for f in self._image_fnames:
-            if not 'noisy' in f:
-                self.files.append(f)
-            else:
+        self.target_img_path = ""
+        for f in self._all_image_fnames:
+            if 'target.jpg' == f.split('/')[-1]:
+                if self.is_recommand:
+                    self.target_img_path = f
+                    self.target_img_fnames = [f]
+                else:
+                    continue
+            if '0.jpg' == f.split('/')[-1]:
                 self.noisy_img_path = f
-        # print(self.files)
+                
+            self.target_img_fnames.append(f)
+                
+        print("noisy_img_path", self.noisy_img_path)
+        print("target_img_path", self.target_img_path)
 
         # 檔名依數字排列
         def getint(name):
-            # name = name.split('/')[-1]
-            # name = name.split('.')[0]
-            # _, num = name.split('_')
-            return int(findall(r"_(\d+)", name)[0])
-        self.files = sorted(self.files, key=getint)
+            return int(findall(r"(\d+)", name)[-1])
+        self.target_img_fnames = sorted(self.target_img_fnames, key=getint)
         
 
         self.transform = A.Compose([
@@ -202,15 +213,19 @@ class ImageDataset(Dataset):
     ])
 
         name = os.path.splitext(os.path.basename(self.img_path))[0]
-        raw_shape = [len(self.files)] + list(self._load_raw_image(0).shape)
+        raw_shape = [len(self.target_img_fnames)] + list(self._load_raw_image(0).shape)
         # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
         #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+        assert self.noisy_img_path != ""
         self.noisy_img = np.array(self._load_image(self.noisy_img_path))
+        if self.is_recommand:
+            assert self.target_img_path != ""
+            self.target_img = np.array(self._load_image(self.target_img_path))
         self.H, self.W, C = self.noisy_img.shape
 
     def __len__(self):
-        return len(self.files)
+        return len(self.target_img_fnames)
 
     def _load_image(self, fn):
         return PIL.Image.open(fn).convert('RGB')
@@ -220,7 +235,7 @@ class ImageDataset(Dataset):
         return os.path.splitext(fname)[1].lower()
 
     def _load_raw_image(self, raw_idx):
-        fname = self.files[raw_idx]
+        fname = self.target_img_fnames[raw_idx]
         image = np.array(PIL.Image.open(fname).convert('RGB'))
         image = self.transform(image=image)['image']
         if image.ndim == 2:
@@ -237,16 +252,16 @@ class ImageDataset(Dataset):
         if labels is None:
             return None
         labels = dict(labels)
-        labels = [labels[fname.replace('\\', '/')] for fname in self._image_fnames]
+        labels = [labels[fname.replace('\\', '/')] for fname in self._all_image_fnames]
         labels = np.array(labels)
         labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
         return labels
 
     def _get_image(self, idx):
-        fname = self.files[idx]
-        # name = fname.split('/')[-1].split('.')[0]
-        # # scene_idx = int(name.split('_')[0])
-        param_idx = int(findall(r"_(\d+)", fname)[0])
+        if not self.is_recommand:
+            fname = self.target_img_fnames[idx]
+            param_idx = int(findall(r"(\d+)", fname)[-1])
+            # print(fname, param_idx)
         
         # get random ROI
         down = np.random.randint(self.resolution, self.H)
@@ -263,7 +278,12 @@ class ImageDataset(Dataset):
         noisy_image = np.rint(noisy_image * 255).clip(0, 255).astype(np.uint8)
         noisy_image = noisy_image.transpose(2,0,1) # HWC => CHW
         
-        denoised_image = np.array(self._load_image(fname)) # uint8 # HWC
+        if self.is_recommand:
+            denoised_image = self.target_img # uint8 # HWC
+            param_idx = 0
+        else:
+            denoised_image = np.array(self._load_image(fname)) # uint8 # HWC
+            
         denoised_image = denoised_image[down-self.resolution:down, right-self.resolution:right, : ]
         # denoised_image = self.images[idx]
         denoised_image = self.transform(image=denoised_image)['image']

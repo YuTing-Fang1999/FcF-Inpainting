@@ -117,7 +117,7 @@ def setup_training_loop_kwargs(
         resolution = 256
     assert img_data is not None
     assert isinstance(img_data, str)
-    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.data.dataset.ImageDataset', img_path=img_data, use_labels=True, max_size=None, xflip=False)
+    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.data.dataset.ImageDataset', img_path=img_data, is_recommand=is_recommand, input_param_dim=input_param_dim, use_labels=True, max_size=None, xflip=False)
     args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=4, prefetch_factor=256)
     args.training_set_kwargs.resolution = resolution
     try:
@@ -486,11 +486,12 @@ def main(ctx, outdir, dry_run, **config_kwargs):
     prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
     prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
     cur_run_id = max(prev_run_ids, default=-1) + 1
-    if args.run_dir is None:
-        args.run_dir = os.path.join(outdir, f'{run_desc}')
-    else:
-        args.run_dir = os.path.join(outdir, f'{args.run_dir}')
-    print(args.run_dir)
+    # if args.run_dir is None:
+    #     args.run_dir = os.path.join(outdir, f'{run_desc}')
+    # else:
+    #     args.run_dir = os.path.join(outdir, f'{args.run_dir}')
+    args.run_dir = outdir
+    print("run_dir", args.run_dir)
     # assert not os.path.exists(args.run_dir)
 
     # Print options.

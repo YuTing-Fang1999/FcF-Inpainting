@@ -436,7 +436,7 @@ def training_loop(
                     assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
                     pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
-                    with open(os.path.join(run_dir, run_dir.split("\\")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
+                    with open(os.path.join(run_dir, run_dir.split("/")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
                         param_tuned = [round(num, 4) for num in param_tuned[0][:input_param_dim].tolist()]
                         f.write(str(param_tuned))
                 else:
