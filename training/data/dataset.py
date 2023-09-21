@@ -189,7 +189,7 @@ class ImageDataset(Dataset):
                     self.target_img_fnames = [f]
                 else:
                     continue
-            if '0.jpg' == f.split('/')[-1]:
+            if '1.jpg' == f.split('/')[-1]:
                 self.noisy_img_path = f
                 
             self.target_img_fnames.append(f)
