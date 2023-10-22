@@ -14,6 +14,7 @@ import matplotlib.cm as cm
 import copy
 import albumentations as A
 from re import findall
+import random
 
 import csv
 #----------------------------------------------------------------------------
@@ -172,6 +173,12 @@ class ImageDataset(Dataset):
                 # 讀取 CSV 檔案內容
                 self._param = np.array(list(csv.reader(csvfile))).astype(np.float32)
         #-------------------------------------------------------------------------
+        self.fix_ROI = None
+        if os.path.exists(self.img_path+"/fix_ROI.txt"):
+            with open(self.img_path+"/fix_ROI.txt", "r") as f:
+                self.fix_ROI = json.loads(f.read())
+        print("fix_ROI", self.fix_ROI)
+        #-------------------------------------------------------------------------
         
         self._all_fnames = [os.path.relpath(os.path.join(root, fname), start=self.img_path).replace("\\","/") for root, _dirs, files in os.walk(self.img_path) for fname in files]
         PIL.Image.init()
@@ -179,29 +186,30 @@ class ImageDataset(Dataset):
         if len(self._all_image_fnames) == 0:
             raise IOError('No image files found in the specified path')
         
-        self.target_img_fnames = []
-        self.noisy_img_path = ""
+        self.processed_img_fnames = []
+        self.unprocessed_img_path = ""
         self.target_img_path = ""
         for f in self._all_image_fnames:
             if 'target.jpg' == f.split('/')[-1]:
                 if self.is_recommand:
                     self.target_img_path = f
-                    self.target_img_fnames = [f]
+                    self.processed_img_fnames = [f]
                 else:
                     continue
-            if '1.jpg' == f.split('/')[-1]:
-                self.noisy_img_path = f
+            if 'unprocessed.jpg' == f.split('/')[-1]:
+                self.unprocessed_img_path = f
+                continue
                 
-            self.target_img_fnames.append(f)
+            self.processed_img_fnames.append(f)
                 
-        print("noisy_img_path", self.noisy_img_path)
+        print("unprocessed_img_path", self.unprocessed_img_path)
         print("target_img_path", self.target_img_path)
 
-        # 檔名依數字排列
-        def getint(name):
-            return int(findall(r"(\d+)", name)[-1])
-        self.target_img_fnames = sorted(self.target_img_fnames, key=getint)
-        
+        if not self.is_recommand:
+            # 檔名依數字排列
+            def getint(name):
+                return int(findall(r"(\d+)", name)[-1])
+            self.processed_img_fnames = sorted(self.processed_img_fnames, key=getint)
 
         self.transform = A.Compose([
         # A.PadIfNeeded(min_height=self.sz, min_width=self.sz),
@@ -213,19 +221,19 @@ class ImageDataset(Dataset):
     ])
 
         name = os.path.splitext(os.path.basename(self.img_path))[0]
-        raw_shape = [len(self.target_img_fnames)] + list(self._load_raw_image(0).shape)
+        raw_shape = [len(self.processed_img_fnames)] + list(self._load_raw_image(0).shape)
         # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
         #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
-        assert self.noisy_img_path != ""
-        self.noisy_img = np.array(self._load_image(self.noisy_img_path))
+        assert self.unprocessed_img_path != ""
+        self.unprocessed_img = np.array(self._load_image(self.unprocessed_img_path))
         if self.is_recommand:
             assert self.target_img_path != ""
             self.target_img = np.array(self._load_image(self.target_img_path))
-        self.H, self.W, C = self.noisy_img.shape
+        self.H, self.W, C = self.unprocessed_img.shape
 
     def __len__(self):
-        return len(self.target_img_fnames)
+        return len(self.processed_img_fnames)
 
     def _load_image(self, fn):
         return PIL.Image.open(fn).convert('RGB')
@@ -235,7 +243,7 @@ class ImageDataset(Dataset):
         return os.path.splitext(fname)[1].lower()
 
     def _load_raw_image(self, raw_idx):
-        fname = self.target_img_fnames[raw_idx]
+        fname = self.processed_img_fnames[raw_idx]
         image = np.array(PIL.Image.open(fname).convert('RGB'))
         image = self.transform(image=image)['image']
         if image.ndim == 2:
@@ -259,40 +267,41 @@ class ImageDataset(Dataset):
 
     def _get_image(self, idx):
         if not self.is_recommand:
-            fname = self.target_img_fnames[idx]
+            fname = self.processed_img_fnames[idx]
             param_idx = int(findall(r"(\d+)", fname)[-1])
             # print(fname, param_idx)
         
-        # get random ROI
-        down = np.random.randint(self.resolution, self.H)
-        right = np.random.randint(self.resolution, self.W)
-        # fix ROI
-        # down = 1300
-        # right = 1600
-        # CHW
+        if self.fix_ROI is not None:
+            random_fix_ROI = random.choice(self.fix_ROI)
+            row = random_fix_ROI[0]+self.resolution
+            col = random_fix_ROI[1]+self.resolution
+        else:
+            # get random ROI
+            row = np.random.randint(self.resolution+200, self.H-200)
+            col = np.random.randint(self.resolution+200, self.W-200)
         
-        noisy_image = self.noisy_img # uint8 # HWC
-        noisy_image = noisy_image[down-self.resolution:down, right-self.resolution:right, : ]
+        unprocessed_img = self.unprocessed_img # uint8 # HWC
+        unprocessed_img = unprocessed_img[row-self.resolution:row, col-self.resolution:col, : ]
         # noisy_image = self.noisy_img
-        noisy_image = self.transform(image=noisy_image)['image']
-        noisy_image = np.rint(noisy_image * 255).clip(0, 255).astype(np.uint8)
-        noisy_image = noisy_image.transpose(2,0,1) # HWC => CHW
+        unprocessed_img = self.transform(image=unprocessed_img)['image']
+        unprocessed_img = np.rint(unprocessed_img * 255).clip(0, 255).astype(np.uint8)
+        unprocessed_img = unprocessed_img.transpose(2,0,1) # HWC => CHW
         
         if self.is_recommand:
-            denoised_image = self.target_img # uint8 # HWC
+            processed_img = self.target_img # uint8 # HWC
             param_idx = 0
         else:
-            denoised_image = np.array(self._load_image(fname)) # uint8 # HWC
+            processed_img = np.array(self._load_image(fname)) # uint8 # HWC
             
-        denoised_image = denoised_image[down-self.resolution:down, right-self.resolution:right, : ]
+        processed_img = processed_img[row-self.resolution:row, col-self.resolution:col, : ]
         # denoised_image = self.images[idx]
-        denoised_image = self.transform(image=denoised_image)['image']
-        denoised_image = np.rint(denoised_image * 255).clip(0, 255).astype(np.uint8)
-        denoised_image = denoised_image.transpose(2,0,1) # HWC => CHW
+        processed_img = self.transform(image=processed_img)['image']
+        processed_img = np.rint(processed_img * 255).clip(0, 255).astype(np.uint8)
+        processed_img = processed_img.transpose(2,0,1) # HWC => CHW
         
-        p = np.concatenate([self._param[param_idx], [down/self.H, right/self.W]], axis=0)
+        p = np.concatenate([self._param[param_idx], [row/self.H, col/self.W]], axis=0)
         
-        return noisy_image, denoised_image, p
+        return unprocessed_img, processed_img, p
         
     def __getitem__(self, idx):
         noisy_image, denoised_image, tuning_param = self._get_image(idx)

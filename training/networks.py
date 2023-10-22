@@ -225,13 +225,19 @@ class TuningFN(nn.Module):
     def __init__(self, input_size: int) -> None:
         super(TuningFN, self).__init__()
         self.fc1 = nn.Linear(input_size, input_size)
-        self.fc2 = nn.Linear(input_size, input_size)
-        self.fc3 = nn.Linear(input_size, input_size)
+        # self.fc2 = nn.Linear(input_size, input_size)
+        # self.fc3 = nn.Linear(input_size, input_size)
+        
+        # init_w = []
+        # self.fc1.weight = torch.nn.Parameter(torch.ones(self.fc1.weight.shape), requires_grad=True)
+        # self.fc1.bias = torch.nn.Parameter(torch.zeros(self.fc1.bias.shape), requires_grad=True)
+        # self.fc2.bias = torch.nn.Parameter(torch.zeros(self.fc1.bias.shape), requires_grad=True)
+        # self.fc3.bias = torch.nn.Parameter(torch.zeros(self.fc1.bias.shape), requires_grad=True)
         
     def forward(self, x):
         x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.fc3(x)
+        # x = self.fc2(x)
+        # x = self.fc3(x)
         x = torch.sigmoid(x)  # 映射到 [0, 1]
         return x
 

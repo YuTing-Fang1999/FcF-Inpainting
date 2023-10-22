@@ -91,7 +91,7 @@ def training_loop(
     ada_interval            = 4,        # How often to perform ADA adjustment?
     ada_kimg                = 500,      # ADA adjustment speed, measured in how many kimg it takes for p to increase/decrease by one unit.
     total_kimg              = 25000,    # Total length of the training, measured in thousands of real images.
-    kimg_per_tick           = 5,        # Progress snapshot interval.
+    kimg_per_tick           = 0.1,        # Progress snapshot interval.
     image_snapshot_ticks    = 50,       # How often to save image snapshots? None = disable.
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = disable.
     resume_pkl              = None,     # Network pickle to resume training from.
@@ -205,7 +205,7 @@ def training_loop(
                 phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
                 phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
     else:
-        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
+        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval)]: #, ('D', D, D_opt_kwargs, D_reg_interval)]:
             if reg_interval is None:
                 opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
                 phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
@@ -350,7 +350,7 @@ def training_loop(
 
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)
-        if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000):
+        if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000 * image_snapshot_ticks):
             continue
 
         # Print status line, accumulating the same information in stats_collector.
@@ -422,20 +422,21 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-        print('best_loss_Gmain', best_loss_Gmain, 'best_rec_loss', best_rec_loss)
-        print("Loss/G/main_loss", stats_dict["Loss/G/main_loss"]['mean'], "Loss/G/rec_loss", stats_dict["Loss/G/rec_loss"]['mean'])
-        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain) or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
+        # print('best_loss_Gmain', best_loss_Gmain, 'best_rec_loss', best_rec_loss)
+        # print("Loss/G/main_loss", stats_dict["Loss/G/main_loss"]['mean'], "Loss/G/rec_loss", stats_dict["Loss/G/rec_loss"]['mean'])
+        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
             # Save image snapshot.
             # if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             if (rank == 0):
                 best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
-                best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
+                # best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
                 
                 if is_recommand:
                     param_tuned = loss.G_tuning_fn(sample_tuning_param[0][:, :-2])
                     assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
                     pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
+                    print('save best txt', stats_dict["Loss/G/main_loss"]['mean'])
                     with open(os.path.join(run_dir, run_dir.split("/")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
                         param_tuned = [round(num, 4) for num in param_tuned[0][:input_param_dim].tolist()]
                         f.write(str(param_tuned))
@@ -452,7 +453,8 @@ def training_loop(
                             module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
                         snapshot_data[name] = module
                         del module # conserve memory
-                    snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
+                    # snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
+                    snapshot_pkl = os.path.join(run_dir, f'Model.pkl')
                 
                     with open(snapshot_pkl, 'wb') as f:
                         pickle.dump(snapshot_data, f)
