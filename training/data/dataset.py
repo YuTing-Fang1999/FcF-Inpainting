@@ -273,16 +273,15 @@ class ImageDataset(Dataset):
         
         if self.fix_ROI is not None:
             random_fix_ROI = random.choice(self.fix_ROI)
-            row = random_fix_ROI[0]+self.resolution
-            col = random_fix_ROI[1]+self.resolution
+            row = random_fix_ROI[0]
+            col = random_fix_ROI[1]
         else:
             # get random ROI
-            row = np.random.randint(self.resolution+200, self.H-200)
-            col = np.random.randint(self.resolution+200, self.W-200)
+            row = np.random.randint(0, self.H-self.resolution)
+            col = np.random.randint(0, self.W-self.resolution)
         
         unprocessed_img = self.unprocessed_img # uint8 # HWC
-        unprocessed_img = unprocessed_img[row-self.resolution:row, col-self.resolution:col, : ]
-        # noisy_image = self.noisy_img
+        unprocessed_img = unprocessed_img[row:row+self.resolution, col:col+self.resolution, : ]
         unprocessed_img = self.transform(image=unprocessed_img)['image']
         unprocessed_img = np.rint(unprocessed_img * 255).clip(0, 255).astype(np.uint8)
         unprocessed_img = unprocessed_img.transpose(2,0,1) # HWC => CHW
@@ -293,13 +292,12 @@ class ImageDataset(Dataset):
         else:
             processed_img = np.array(self._load_image(fname)) # uint8 # HWC
             
-        processed_img = processed_img[row-self.resolution:row, col-self.resolution:col, : ]
-        # denoised_image = self.images[idx]
+        processed_img = processed_img[row:row+self.resolution, col:col+self.resolution, : ]
         processed_img = self.transform(image=processed_img)['image']
         processed_img = np.rint(processed_img * 255).clip(0, 255).astype(np.uint8)
         processed_img = processed_img.transpose(2,0,1) # HWC => CHW
         
-        p = np.concatenate([self._param[param_idx], [row/self.H, col/self.W]], axis=0)
+        p = np.concatenate([self._param[param_idx], [(row+(self.resolution//2))/self.H, (col+(self.resolution//2))/self.W]], axis=0)
         
         return unprocessed_img, processed_img, p
         
