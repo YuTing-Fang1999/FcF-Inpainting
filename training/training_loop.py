@@ -135,7 +135,6 @@ def training_loop(
         print('Constructing networks...')
     common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
-    D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Modul
     G_ema = copy.deepcopy(G).eval()
 
     # Resume from existing pickle.
@@ -148,20 +147,16 @@ def training_loop(
         with torch.no_grad():
             resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
             resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
-            resume_data['D'].b256.fromrgb.weight=Parameter(resume_data['D'].b256.fromrgb.weight[:,:3,...])
             resume_data['G_ema'].encoder.b256.fromrgb.weight=Parameter(resume_data['G_ema'].encoder.b256.fromrgb.weight[:,:3,...])
             resume_data['G_ema'].mapping.fc0.weight=Parameter(resume_data['G_ema'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
 
-        for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
+        for name, module in [('G', G), ('G_ema', G_ema)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network parameters
     if rank == 0:
         netG_params = sum(p.numel() for p in G.parameters())
         print(Fore.GREEN +"Generator Params: {} M".format(netG_params/1e6))
-
-        netD_params = sum(p.numel() for p in D.parameters())
-        print(Fore.GREEN +"Discriminator Params: {} M".format(netD_params/1e6))
 
     # Setup augmentation.
     if rank == 0:
@@ -178,7 +173,7 @@ def training_loop(
     if rank == 0:
         print(Fore.CYAN + f'Distributing across {num_gpus} GPUs...')
     ddp_modules = dict()
-    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn), ('D', D), (None, G_ema), ('augment_pipe', augment_pipe)]:
+    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn), (None, G_ema), ('augment_pipe', augment_pipe)]:
         if (num_gpus > 1) and (module is not None) and len(list(module.parameters())) != 0:
             module.requires_grad_(True)
             module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True)
@@ -446,7 +441,7 @@ def training_loop(
 
                     print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
                     snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-                    for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
+                    for name, module in [('G', G), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
                         if module is not None:
                             if num_gpus > 1:
                                 misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
