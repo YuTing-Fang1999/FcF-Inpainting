@@ -135,7 +135,6 @@ def training_loop(
         print('Constructing networks...')
     common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
-    G_ema = copy.deepcopy(G).eval()
 
     # Resume from existing pickle.
     if (resume_pkl is not None) and (rank == 0):
@@ -147,10 +146,8 @@ def training_loop(
         with torch.no_grad():
             resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
             resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
-            resume_data['G_ema'].encoder.b256.fromrgb.weight=Parameter(resume_data['G_ema'].encoder.b256.fromrgb.weight[:,:3,...])
-            resume_data['G_ema'].mapping.fc0.weight=Parameter(resume_data['G_ema'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
 
-        for name, module in [('G', G), ('G_ema', G_ema)]:
+        for name, module in [('G', G)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network parameters
@@ -173,7 +170,7 @@ def training_loop(
     if rank == 0:
         print(Fore.CYAN + f'Distributing across {num_gpus} GPUs...')
     ddp_modules = dict()
-    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn), (None, G_ema), ('augment_pipe', augment_pipe)]:
+    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn)]:
         if (num_gpus > 1) and (module is not None) and len(list(module.parameters())) != 0:
             module.requires_grad_(True)
             module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True)
@@ -318,16 +315,6 @@ def training_loop(
             if phase.end_event is not None:
                 phase.end_event.record(torch.cuda.current_stream(device))
 
-        # Update G_ema.
-        with torch.autograd.profiler.record_function('Gema'):
-            ema_nimg = ema_kimg * 1000
-            if ema_rampup is not None:
-                ema_nimg = min(ema_nimg, cur_nimg * ema_rampup)
-            ema_beta = 0.5 ** (batch_size / max(ema_nimg, 1e-8))
-            for p_ema, p in zip(G_ema.parameters(), G.parameters()):
-                p_ema.copy_(p.lerp(p_ema, ema_beta))
-            for b_ema, b in zip(G_ema.buffers(), G.buffers()):
-                b_ema.copy_(b)
 
         # Update state.
         cur_nimg += batch_size
@@ -441,7 +428,7 @@ def training_loop(
 
                     print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
                     snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-                    for name, module in [('G', G), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
+                    for name, module in [('G', G), ('augment_pipe', augment_pipe)]:
                         if module is not None:
                             if num_gpus > 1:
                                 misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
