@@ -55,33 +55,20 @@ class StyleGAN2Loss(Loss):
 
     def accumulate_gradients(self, phase, noisy_img, denoised_img, tuning_param, real_c, gen_c, sync, gain):
         # print('phase: ', phase)
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
-        do_Gmain = (phase in ['Gmain', 'Gboth'])
-        
-        if self.is_recommand:
-            # Gmain: Maximize logits for generated images.
-            with torch.autograd.profiler.record_function('Gmain_forward'):
-                gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
-                loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
+        with torch.autograd.profiler.record_function('Gmain_forward'):
+            gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
+            loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
+            if not self.is_recommand:
+                loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
+                loss_Gmain = loss_pl + loss_rec
+                training_stats.report('Loss/G/rec_loss', loss_rec)
+            else:
                 loss_Gmain = loss_pl
-                training_stats.report('Loss/G/main_loss', loss_Gmain)
-                training_stats.report('Loss/G/pl_loss', loss_pl)
-            with torch.autograd.profiler.record_function('Gmain_backward'):
-                loss_Gmain.mul(gain).backward()
                 
-        else:
-            # Gmain: Maximize logits for generated images.
-            if do_Gmain:
-                with torch.autograd.profiler.record_function('Gmain_forward'):
-                    gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
-                    loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
-                    loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
-                    loss_Gmain = loss_rec + loss_pl
-                    # training_stats.report('Loss/G/loss', loss_G)
-                    training_stats.report('Loss/G/rec_loss', loss_rec)
-                    training_stats.report('Loss/G/main_loss', loss_Gmain)
-                    training_stats.report('Loss/G/pl_loss', loss_pl)
-                with torch.autograd.profiler.record_function('Gmain_backward'):
-                    loss_Gmain.mul(gain).backward()
+            training_stats.report('Loss/G/pl_loss', loss_pl)
+            training_stats.report('Loss/G/main_loss', loss_Gmain)
+                
+        with torch.autograd.profiler.record_function('Gmain_backward'):
+            loss_Gmain.mul(gain).backward()
 
 #----------------------------------------------------------------------------
