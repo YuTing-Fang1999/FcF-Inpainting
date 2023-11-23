@@ -360,29 +360,6 @@ def training_loop(
                 print()
                 print(Fore.RED + 'Aborting...')
             
-
-
-        # if (snapshot_data is not None) and metrics and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-        #     msk_type = eval_img_data.split('/')[-1]
-        #     if rank == 0:
-        #         create_folders(msk_type)
-        #     label = torch.zeros([1, snapshot_data['G_ema'].c_dim]).to(device)
-        #     save_gen(snapshot_data['G_ema'], rank, num_gpus, device, eval_img_data, resolution, label, 1, msk_type)
-        #     if rank == 0:
-        #         eval_dataset = PrecomputedInpaintingResultsDataset(eval_img_data, f'fid_gens/{msk_type}', **eval_config.dataset_kwargs)
-        #         metrics = {
-        #             'fid': FIDScore()
-        #         }
-        #         evaluator = InpaintingEvaluator(eval_dataset, scores=metrics, area_grouping=False,
-        #                                 integral_title='lpips_fid100_f1', integral_func=None,
-        #                                 **eval_config.evaluator_kwargs)
-        #         results = evaluator.dist_evaluate(device, num_gpus=1, rank=0)
-        #         fid_score = round(results[('fid', 'total')]['mean'], 5)
-        #         stats_metrics.update({'fid': fid_score})
-        #         print(Fore.GREEN + Style.BRIGHT + f' FID Score: {fid_score}')
-
-        
-
         # Collect statistics.
         for phase in phases:
             value = []
@@ -403,15 +380,11 @@ def training_loop(
         # Save network snapshot.
         snapshot_pkl = None
         snapshot_data = None
-        # if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and cur_tick is not 0:
-        # print('best_loss_Gmain', best_loss_Gmain, 'best_rec_loss', best_rec_loss)
-        # print("Loss/G/main_loss", stats_dict["Loss/G/main_loss"]['mean'], "Loss/G/rec_loss", stats_dict["Loss/G/rec_loss"]['mean'])
+        
         if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
             # Save image snapshot.
-            # if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             if (rank == 0):
                 best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
-                # best_rec_loss = stats_dict["Loss/G/rec_loss"]['mean']
                 
                 if is_recommand:
                     param_tuned = loss.G_tuning_fn(sample_tuning_param[0][:, :-2])
@@ -435,7 +408,6 @@ def training_loop(
                             module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
                         snapshot_data[name] = module
                         del module # conserve memory
-                    # snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
                     snapshot_pkl = os.path.join(run_dir, f'Model.pkl')
                 
                     with open(snapshot_pkl, 'wb') as f:
