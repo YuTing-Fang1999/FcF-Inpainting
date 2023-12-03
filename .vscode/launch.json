@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train",
+            "name": "Train ASF",
             "type": "python",
             "request": "launch",
             "program": "train.py",
@@ -15,17 +15,20 @@
                 "--is_recommand",
                 "False", // False代表訓練，True代表推薦
                 "--kimg",
-                "50", // 訓練幾k張圖片，訓練50k，推薦3k
+                "200", // 訓練幾k張圖片，訓練50k，推薦3k
                 "--resume",
-                "places.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
-                "--img_data=datasets/region0", // 資料集路徑
-                "--outdir=training_run/region0", // 訓練結果的輸出資料夾
+                "places512.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/ASF_train/colorchecker", // 資料集路徑
+                "--dataset_paths=datasets/ASF_train/out2", // 資料集路徑
+                "--outdir=training_run/ASF_no_ffc_skip_train_512", // 訓練結果的輸出資料夾
+                "--input_param_dims",
+                "13", // 輸入參數的維度(要推薦幾個參數)
                 "--batch",
                 "16", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
-                
+
                 // 下面這些參數可以不用調
-                "--input_param_dim",
-                "12", // 輸入參數的維度(要推薦幾個參數)
+                "--resolution",
+                "256",
                 "--lr",
                 "1e-3",
                 "--gpus",
@@ -43,7 +46,47 @@
             ]
         },
         {
-            "name": "Recommand",
+            "name": "Train ANR",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--is_recommand",
+                "False", // False代表訓練，True代表推薦
+                "--kimg",
+                "2000", // 訓練幾k張圖片，訓練50k，推薦3k
+                "--resume",
+                "ANR.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/ANR_train/ISO3200_colorchecker_ANR_FULL_6", // 資料集路徑
+                "--outdir=training_run/ISO3200_colorchecker_ANR_FULL_6_no_ffc_skip_train_512", // 訓練結果的輸出資料夾
+                "--input_param_dims",
+                "6", // 輸入參數的維度(要推薦幾個參數)
+                "--batch",
+                "8", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+
+                // 下面這些參數可以不用調
+                "--resolution",
+                "512",
+                "--lr",
+                "1e-3",
+                "--gpus",
+                "1",
+                "--gamma",
+                "10",
+                "--aug",
+                "noaug",
+                "--metrics",
+                "True",
+                "--eval_img_data",
+                "None",
+                "--snap",
+                "20"
+            ]
+        },
+        {
+            "name": "Recommand ASF ANR",
             "type": "python",
             "request": "launch",
             "program": "train.py",
@@ -53,17 +96,23 @@
                 "--is_recommand",
                 "True", // False代表訓練，True代表推薦
                 "--kimg",
-                "3", // 訓練幾k張圖片，訓練50k，推薦3k
+                "10", // 訓練幾k張圖片，訓練50k，推薦3k
                 "--resume",
-                "places.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
-                "--img_data=datasets/region0", // 資料集路徑
-                "--outdir=training_run/region0", // 訓練結果的輸出資料夾
+                "training_run/ISO3200_colorchecker_ANR_FULL_6/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--resume",
+                "training_run/ASF_train/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/recommend/out2_ours_ANR_ASF", // 資料集路徑
+                "--outdir=target_run/out2_ours_ANR_ASF_test", // 訓練結果的輸出資料夾
+                "--input_param_dims",
+                "6", // 輸入參數的維度(要推薦幾個參數)
+                "--input_param_dims",
+                "13", // 輸入參數的維度(要推薦幾個參數)
                 "--batch",
-                "16", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                "8", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
                 
                 // 下面這些參數可以不用調
-                "--input_param_dim",
-                "12", // 輸入參數的維度(要推薦幾個參數)
+                "--resolution",
+                "256",
                 "--lr",
                 "1e-3",
                 "--gpus",

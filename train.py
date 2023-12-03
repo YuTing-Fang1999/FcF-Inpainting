@@ -43,7 +43,7 @@ def setup_training_loop_kwargs(
     seed            = None, # Random seed: <int>, default = 0
 
     # Dataset.
-    img_data        = None, # Training dataset (required): <path>
+    dataset_paths        = None, # Training dataset (required): <path>
     eval_img_data   = None, # Evaluation dataset (required): <path>
     resolution      = None, # Res of Images
     cond            = None, # Train conditional model based on dataset labels: <bool>, default = False
@@ -55,7 +55,7 @@ def setup_training_loop_kwargs(
     gamma           = None, # Override R1 gamma: <float>
     kimg            = None, # Override training duration: <int>
     batch           = None, # Override batch size: <int>
-    input_param_dim = None,
+    input_param_dims = None,
     is_recommand    = False,
     lr              = 1e-4,
     run_dir         = None,
@@ -77,8 +77,14 @@ def setup_training_loop_kwargs(
     nobench         = None, # Disable cuDNN benchmarking: <bool>, default = False
     workers         = None, # Override number of DataLoader workers: <int>, default = 3
 ):
+    assert len(input_param_dims) == len(resume), "input_param_dims, resume should be the same length" 
+    assert is_recommand or len(input_param_dims) == 1, "Only one model can be trained"
     args = dnnlib.EasyDict()
-    args.input_param_dim = input_param_dim
+    # input_param_dims = [6,13]
+    # input_param_dims = [6]
+    print("input_param_dims", input_param_dims)
+    print("resume", resume)
+    args.input_param_dims = input_param_dims
     args.is_recommand = is_recommand
     args.run_dir = run_dir
     # ------------------------------------------
@@ -113,11 +119,11 @@ def setup_training_loop_kwargs(
     # Dataset: data, cond, subset, mirror
     # -----------------------------------
 
-    if resolution is None:
-        resolution = 256
-    assert img_data is not None
-    assert isinstance(img_data, str)
-    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.data.dataset.ImageDataset', img_path=img_data, is_recommand=is_recommand, input_param_dim=input_param_dim, use_labels=True, max_size=None, xflip=False)
+    assert resolution is not None
+    assert dataset_paths is not None
+    print("dataset_paths", dataset_paths)
+    assert isinstance(dataset_paths, tuple)
+    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.data.dataset.ImageDataset', dataset_paths=dataset_paths, is_recommand=is_recommand, input_param_dims=input_param_dims, use_labels=True, max_size=None, xflip=False)
     args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=4, prefetch_factor=256)
     args.training_set_kwargs.resolution = resolution
     try:
@@ -186,7 +192,7 @@ def setup_training_loop_kwargs(
         spec.gamma = 0.0002 * (res ** 2) / spec.mb # heuristic formula
         spec.ema = spec.mb * 10 / 32
 
-    args.G_kwargs = dnnlib.EasyDict(class_name='training.networks.Generator', z_dim=512, w_dim=512, encoder_kwargs=dnnlib.EasyDict(block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs = dnnlib.EasyDict()), mapping_kwargs=dnnlib.EasyDict(), synthesis_kwargs=dnnlib.EasyDict(), input_param_dim=input_param_dim, is_recommand=is_recommand)
+    args.G_kwargs = dnnlib.EasyDict(class_name='training.networks.Generator', z_dim=512, w_dim=512, encoder_kwargs=dnnlib.EasyDict(block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs = dnnlib.EasyDict()), mapping_kwargs=dnnlib.EasyDict(), synthesis_kwargs=dnnlib.EasyDict(), is_recommand=is_recommand)
     args.D_kwargs = dnnlib.EasyDict(class_name='training.networks.Discriminator', block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     
     args.G_kwargs.synthesis_kwargs.channel_base = args.G_kwargs.encoder_kwargs.channel_base = args.D_kwargs.channel_base = int(spec.fmaps * 32768)
@@ -313,17 +319,17 @@ def setup_training_loop_kwargs(
         'lsundog256':  'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/lsundog-res256-paper256-kimg100000-noaug.pkl',
     }
 
-    assert resume is None or isinstance(resume, str)
+    assert resume is None or isinstance(resume, tuple)
     if resume is None:
         resume = 'noresume'
     elif resume == 'noresume':
         desc += '-noresume'
     elif resume in resume_specs:
         desc += f'-resume{resume}'
-        args.resume_pkl = resume_specs[resume] # predefined url
+        args.resume_pkls = resume_specs[resume] # predefined url
     else:
         desc += '-resumecustom'
-        args.resume_pkl = resume # custom path or url
+        args.resume_pkls = resume # custom path or url
 
     if resume != 'noresume':
         args.ada_kimg = 100 # make ADA react faster at the beginning
@@ -422,9 +428,9 @@ class CommaSeparatedList(click.ParamType):
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
 
 # Dataset.
-@click.option('--img_data', help='Training images (directory)', metavar='PATH', required=True)
+@click.option('--dataset_paths', help='Training images (directory)', metavar='PATH', required=True, multiple=True)
 @click.option('--eval_img_data', help='Evaluation images (directory)', metavar='PATH', required=True)
-@click.option('--resolution', help='Res of Images [default: 256]', type=int, metavar='INT')
+@click.option('--resolution', help='Res of Images [default: 256]', type=int, metavar='INT', required=True)
 @click.option('--cond', help='Train conditional model based on dataset labels [default: false]', type=bool, metavar='BOOL')
 @click.option('--subset', help='Train with only N images [default: all]', type=int, metavar='INT')
 @click.option('--mirror', help='Enable dataset x-flips [default: false]', type=bool, metavar='BOOL')
@@ -434,7 +440,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--gamma', help='Override R1 gamma', type=float)
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')
 @click.option('--batch', help='Override batch size', type=int, metavar='INT')
-@click.option('--input_param_dim', help='要調的參數個數', type=int, metavar='INT')
+@click.option('--input_param_dims', help='要調的參數個數', type=int, multiple=True)
 @click.option('--is_recommand', help='推薦模式', type=bool, metavar='BOOL', default=False)
 @click.option('--run_dir', help='run dir', metavar='DIR', default=None)
 @click.option('--lr', help='learning rate', type=float, default=1e-4)
@@ -446,7 +452,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--augpipe', help='Augmentation pipeline [default: bgc]', type=click.Choice(['blit', 'geom', 'color', 'filter', 'noise', 'cutout', 'bg', 'bgc', 'bgcf', 'bgcfn', 'bgcfnc']))
 
 # Transfer learning.
-@click.option('--resume', help='Resume training [default: noresume]', metavar='PKL')
+@click.option('--resume', help='Resume training [default: noresume]', metavar='PKL', multiple=True)
 @click.option('--freezed', help='Freeze-D [default: 0 layers]', type=int, metavar='INT')
 
 # Performance options.
@@ -500,7 +506,7 @@ def main(ctx, outdir, dry_run, **config_kwargs):
     print(Fore.YELLOW + json.dumps(args, indent=2))
     print()
     print(Fore.GREEN + f'Output directory:   {args.run_dir}')
-    print(Fore.GREEN + f'Training data:      {args.training_set_kwargs.img_path}')
+    print(Fore.GREEN + f'Training data:      {args.training_set_kwargs.dataset_paths}')
     print(Fore.GREEN + f'Training duration:  {args.total_kimg} kimg')
     print(Fore.GREEN + f'Number of GPUs:     {args.num_gpus}')
     print(Fore.GREEN + f'Number of images:   {args.training_set_kwargs.max_size}')

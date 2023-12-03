@@ -16,13 +16,10 @@ class Loss:
 #----------------------------------------------------------------------------
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G_encoder, G_mapping, G_synthesis, G_tuning_fn, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2,  is_recommand=False):
+    def __init__(self, device, Gs, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2,  is_recommand=False):
         super().__init__()
         self.device = device
-        self.G_encoder = G_encoder
-        self.G_mapping = G_mapping
-        self.G_synthesis = G_synthesis
-        self.G_tuning_fn = G_tuning_fn
+        self.Gs = Gs
         self.augment_pipe = augment_pipe
         self.style_mixing_prob = style_mixing_prob
         self.r1_gamma = r1_gamma
@@ -34,23 +31,24 @@ class StyleGAN2Loss(Loss):
         self.LPIPS = LPIPS(net='alex',version='0.1').cuda()
         self.is_recommand = is_recommand
 
-    def run_G(self, r_img, z, c, sync):
-        with misc.ddp_sync(self.G_encoder, sync):
-            x_global, feats = self.G_encoder(r_img, c)
-        with misc.ddp_sync(self.G_mapping, sync):
-            if self.is_recommand:
-                z_tune = self.G_tuning_fn(z[:, :-2].to(torch.float32)) ## 
-                z = torch.cat((z_tune, z[:, -2:]), 1)
-            ws = self.G_mapping(z, c)
-            
-        with misc.ddp_sync(self.G_synthesis, sync):
-            img = self.G_synthesis(x_global, None, feats, ws)
+    def run_G(self, img, tuning_param, c, sync):
+        dim = 0
+        for i, G in enumerate(self.Gs):
+            z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
+            with misc.ddp_sync(G.encoder, sync):
+                x_global, feats = G.encoder(img, c)
+            with misc.ddp_sync(G.mapping, sync):
+                if self.is_recommand:
+                    z_tune = G.tuning_fn(z[:, :-2].to(torch.float32))
+                    z = torch.cat((z_tune, z[:, -2:]), 1)
+                ws = G.mapping(z, c)
+                
+            with misc.ddp_sync(G.synthesis, sync):
+                img = G.synthesis(x_global, None, feats, ws)
+                
+            dim += G.input_param_dim
+                
         return img, ws
-
-    def run_D(self, img, c, sync):
-        with misc.ddp_sync(self.D, sync):
-            logits = self.D(img, c)
-        return logits
     
 
     def accumulate_gradients(self, phase, noisy_img, denoised_img, tuning_param, real_c, gen_c, sync, gain):

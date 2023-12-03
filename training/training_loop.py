@@ -65,7 +65,7 @@ def save_image_grid(imgs, fname, label, drange):
 def training_loop(
     run_dir                 = '.',      # Output directory.
     eval_img_data           = None,     # Evaluation Image data
-    resolution              = 256,      # Resolution of evaluation image
+    resolution              = None,      # Resolution of evaluation image
     training_set_kwargs     = {},       # Options for training set.
     data_loader_kwargs      = {},       # Options for torch.utils.data.DataLoader.
     G_kwargs                = {},       # Options for generator network.
@@ -79,7 +79,7 @@ def training_loop(
     num_gpus                = 1,        # Number of GPUs participating in the training.
     rank                    = 0,        # Rank of the current process in [0, num_gpus[.
     batch_size              = 4,        # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
-    input_param_dim         = 512,
+    input_param_dims         = 512,
     is_recommand            = False,
     batch_gpu               = 4,        # Number of samples processed at a time by one GPU.
     ema_kimg                = 10,       # Half-life of the exponential moving average (EMA) of generator weights.
@@ -94,14 +94,13 @@ def training_loop(
     kimg_per_tick           = 0.1,        # Progress snapshot interval.
     image_snapshot_ticks    = 50,       # How often to save image snapshots? None = disable.
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = disable.
-    resume_pkl              = None,     # Network pickle to resume training from.
+    resume_pkls              = None,     # Network pickle to resume training from.
     cudnn_benchmark         = True,     # Enable torch.backends.cudnn.benchmark?
     allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32?
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
     best_loss_Gmain = 1e8
-    best_rec_loss = 1e8
     # Initialize.
     start_time = time.time()
     device = torch.device('cuda', rank)
@@ -134,81 +133,81 @@ def training_loop(
     if rank == 0:
         print('Constructing networks...')
     common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
-    G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
 
+    Gs = []
     # Resume from existing pickle.
-    if (resume_pkl is not None) and (rank == 0):
-        print(f'Resuming from "{resume_pkl}"')
-        with dnnlib.util.open_url(resume_pkl) as f:
-            resume_data = legacy.load_network_pkl(f)
+    if (resume_pkls is not None) and (rank == 0):
+        for resume_pkl, input_param_dim in zip(resume_pkls, input_param_dims):
+            print(f'Resuming from "{resume_pkl}"')
+            G_kwargs.input_param_dim = input_param_dim
+            G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
             
-        # perform model surgery
-        with torch.no_grad():
-            resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
-            resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
+            with dnnlib.util.open_url(resume_pkl) as f:
+                resume_data = legacy.load_network_pkl(f)
+                
+            # perform model surgery
+            with torch.no_grad():
+                getattr(resume_data['G'].encoder, f'b{resolution}').fromrgb.weight=Parameter(getattr(resume_data['G'].encoder, f'b{resolution}').fromrgb.weight[:,:3,...])
+                # resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
+                resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
 
-        for name, module in [('G', G)]:
-            misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
-
+            for name, module in [('G', G)]:
+                misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
+            
+            Gs.append(G)
+    assert is_recommand or  len(Gs) == 1
     # Print network parameters
     if rank == 0:
-        netG_params = sum(p.numel() for p in G.parameters())
-        print(Fore.GREEN +"Generator Params: {} M".format(netG_params/1e6))
-
-    # Setup augmentation.
-    if rank == 0:
-        print(Fore.YELLOW + 'Setting up augmentation...')
-    augment_pipe = None
-    ada_stats = None
-    if (augment_kwargs is not None) and (augment_p > 0 or ada_target is not None):
-        augment_pipe = dnnlib.util.construct_class_by_name(**augment_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
-        augment_pipe.p.copy_(torch.as_tensor(augment_p))
-        if ada_target is not None:
-            ada_stats = training_stats.Collector(regex='Loss/signs/real')
+        for G in Gs:
+            netG_params = sum(p.numel() for p in G.parameters())
+            print(Fore.GREEN +"Generator Params: {} M".format(netG_params/1e6))
 
     # Distribute across GPUs.
     if rank == 0:
         print(Fore.CYAN + f'Distributing across {num_gpus} GPUs...')
     ddp_modules = dict()
-    for name, module in [('G_encoder', G.encoder), ('G_mapping', G.mapping), ('G_synthesis', G.synthesis), ('G_tuning_fn', G.tuning_fn)]:
-        if (num_gpus > 1) and (module is not None) and len(list(module.parameters())) != 0:
-            module.requires_grad_(True)
-            module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True)
-            module.requires_grad_(False)
-        if name is not None:
-            ddp_modules[name] = module
+    for i, G in enumerate(Gs):
+        for name, module in [(f'G{i}_encoder', G.encoder), (f'G{i}_mapping', G.mapping), (f'G{i}_synthesis', G.synthesis), (f'G{i}_tuning_fn', G.tuning_fn)]:
+            if (num_gpus > 1) and (module is not None) and len(list(module.parameters())) != 0:
+                module.requires_grad_(True)
+                module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True)
+                module.requires_grad_(False)
+            if name is not None:
+                ddp_modules[name] = module
 
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, **ddp_modules, **loss_kwargs) # subclass of training.losses.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, Gs=Gs, **loss_kwargs) # subclass of training.losses.loss.Loss
     phases = []
-    if is_recommand:
-        for name, module, opt_kwargs, reg_interval in [('G_tuning_fn', G.tuning_fn, G_opt_kwargs, G_reg_interval)]:
-            if reg_interval is None:
-                opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-                phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
-            else: # Lazy regularization.
-                mb_ratio = reg_interval / (reg_interval + 1)
-                opt_kwargs = dnnlib.EasyDict(opt_kwargs)
-                opt_kwargs.lr = opt_kwargs.lr * mb_ratio
-                opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-                opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-                phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
-                phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
-    else:
-        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval)]: #, ('D', D, D_opt_kwargs, D_reg_interval)]:
-            if reg_interval is None:
-                opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-                phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
-            else: # Lazy regularization.
-                mb_ratio = reg_interval / (reg_interval + 1)
-                opt_kwargs = dnnlib.EasyDict(opt_kwargs)
-                opt_kwargs.lr = opt_kwargs.lr * mb_ratio
-                opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-                opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-                phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
-                phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+    for i, G in enumerate(Gs):
+        if is_recommand:
+            for name, module, opt_kwargs, reg_interval in [(f'G{i}_tuning_fn', G.tuning_fn, G_opt_kwargs, G_reg_interval)]:
+                if reg_interval is None:
+                    opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                    phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
+                else: # Lazy regularization.
+                    mb_ratio = reg_interval / (reg_interval + 1)
+                    opt_kwargs = dnnlib.EasyDict(opt_kwargs)
+                    opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+                    opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+                    opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                    phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
+                    phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+        else:
+            for name, module, opt_kwargs, reg_interval in [(f'G{i}', G, G_opt_kwargs, G_reg_interval)]: #, ('D', D, D_opt_kwargs, D_reg_interval)]:
+                if reg_interval is None:
+                    opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                    phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
+                else: # Lazy regularization.
+                    mb_ratio = reg_interval / (reg_interval + 1)
+                    opt_kwargs = dnnlib.EasyDict(opt_kwargs)
+                    opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+                    opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+                    opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+                    phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
+                    phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+    
     for phase in phases:
         phase.start_event = None
         phase.end_event = None
@@ -232,16 +231,24 @@ def training_loop(
         sample_tuning_param = sample_tuning_param.split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(torch.float32).to(device).split(batch_gpu)
         
-        pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
+        pred_images = []
+        for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
+            img = noisy_img
+            dim = 0
+            for i, G in enumerate(Gs):
+                z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
+                img = G(img=img, z=z, c=c, noise_mode='const')
+                dim += G.input_param_dim
+            pred_images.append(img.cpu())
+                
+        pred_images = torch.cat(pred_images)
+        # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
         save_image_grid(noisy_image, os.path.join(run_dir, 'run_init'), label='NOISY', drange=[0,255])
         save_image_grid(denoised_image, os.path.join(run_dir, 'run_init'),  label='GT', drange=[0,255])
         save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, 'run_init'),  label='PRED', drange=[-1,1])
         
         if is_recommand:
             print("sample_tuning_param", sample_tuning_param)
-            ori_out = loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)
-            assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
-
     
     # Initialize logs.
     if rank == 0:
@@ -324,12 +331,6 @@ def training_loop(
             bar.numerator = cur_nimg
             print(bar, end='\r')
 
-        # Execute ADA heuristic.
-        if (ada_stats is not None) and (batch_idx % ada_interval == 0):
-            ada_stats.update()
-            adjust = np.sign(ada_stats['Loss/signs/real'] - ada_target) * (batch_size * ada_interval) / (ada_kimg * 1000)
-            augment_pipe.p.copy_((augment_pipe.p + adjust).max(misc.constant(0, device=device)))
-
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)
         if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000 * image_snapshot_ticks):
@@ -347,7 +348,6 @@ def training_loop(
         fields += [f"cpumem GB {training_stats.report0('Resources/cpu_mem_gb', psutil.Process(os.getpid()).memory_info().rss / 2**30):<6.2f}"]
         fields += [f"gpumem GB {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
         torch.cuda.reset_peak_memory_stats()
-        fields += [f"augment {training_stats.report0('Progress/augment', float(augment_pipe.p.cpu()) if augment_pipe is not None else 0):.4f}"]
         training_stats.report0('Timing/total_hours', (tick_end_time - start_time) / (60 * 60))
         training_stats.report0('Timing/total_days', (tick_end_time - start_time) / (24 * 60 * 60))
         if rank == 0:
@@ -387,21 +387,48 @@ def training_loop(
                 best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
                 
                 if is_recommand:
-                    param_tuned = loss.G_tuning_fn(sample_tuning_param[0][:, :-2])
-                    assert (ori_out == loss.G_mapping(torch.ones([batch_size, input_param_dim+2], device=device).to(torch.float32), None)).all()
-                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
+                    pred_images = []
+                    for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
+                        img = noisy_img
+                        dim = 0
+                        for i, G in enumerate(Gs):
+                            z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
+                            img = G(img=img, z=z, c=c, noise_mode='const')
+                            dim += G.input_param_dim
+                        pred_images.append(img.cpu())
+                            
+                    pred_images = torch.cat(pred_images)
+                    # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
                     print('save best txt', stats_dict["Loss/G/main_loss"]['mean'])
                     with open(os.path.join(run_dir, run_dir.split("/")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
-                        param_tuned = [round(num, 4) for num in param_tuned[0][:input_param_dim].tolist()]
+                        dim = 0
+                        param_tuned = []
+                        for G in Gs:
+                            param_tuned.append(G.tuning_fn(sample_tuning_param[0][:, dim:dim+G.input_param_dim]).cpu())
+                            dim += G.input_param_dim
+                        param_tuned = np.concatenate(param_tuned, axis=1)
+                        param_tuned = [round(num, 4) for num in param_tuned[0].tolist()]
                         f.write(str(param_tuned))
                 else:
-                    pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
+                    pred_images = []
+                    for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
+                        img = noisy_img
+                        dim = 0
+                        for i, G in enumerate(Gs):
+                            z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
+                            img = G(img=img, z=z, c=c, noise_mode='const')
+                            dim += G.input_param_dim
+                        pred_images.append(img.cpu())
+                            
+                    pred_images = torch.cat(pred_images)
+                    # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
 
                     print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
                     snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-                    for name, module in [('G', G), ('augment_pipe', augment_pipe)]:
+                    
+                    for name, module in [('G', Gs[0])]:
                         if module is not None:
                             if num_gpus > 1:
                                 misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')

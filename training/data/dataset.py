@@ -119,13 +119,6 @@ class Dataset(torch.utils.data.Dataset):
         return self.image_shape[0]
 
     @property
-    def resolution(self):
-        # assert len(self.image_shape) == 3 # CHW
-        # assert self.image_shape[1] == self.image_shape[2]
-        # return self.image_shape[1]
-        return 256
-
-    @property
     def label_shape(self):
         if self._label_shape is None:
             raw_labels = self._get_raw_labels()
@@ -153,54 +146,59 @@ class Dataset(torch.utils.data.Dataset):
 class ImageDataset(Dataset):
     
     def __init__(self,
-        img_path,                   # Path to images.
+        dataset_paths,                   # Path to images.
         is_recommand    = False,
-        input_param_dim = 512,
+        input_param_dims = [512],
         resolution      = None,     # Ensure specific resolution, None = highest available.
         **super_kwargs,             # Additional arguments for the Dataset base class.
     ):
         self.is_recommand = is_recommand
-        self.input_param_dim = input_param_dim
-        self.sz = resolution
-        self.img_path = img_path
+        self.input_param_dims = input_param_dims
+        self.resolution = resolution
+        self.dataset_paths = dataset_paths
         self._type = 'dir'
         #-------------------------------------------------------------------------
         if self.is_recommand:
-            self._param = np.array([np.ones(self.input_param_dim)]).astype(np.float32)
+            self._param = []
+            for input_param_dim in self.input_param_dims:
+                self._param.append(np.ones(input_param_dim).astype(np.float32))
+            self._param = np.concatenate(self._param, axis=0)
+            self._param = np.array([self._param])
         else:
-            # 開啟 CSV 檔案
-            with open(self.img_path+'/param_norm.csv', newline='') as csvfile:
-                # 讀取 CSV 檔案內容
-                self._param = np.array(list(csv.reader(csvfile))).astype(np.float32)
+            # train
+            self._param = {}
+            for img_path in self.dataset_paths:
+                # 開啟 CSV 檔案
+                with open(img_path+'/param_norm.csv', newline='') as csvfile:
+                    # 讀取 CSV 檔案內容
+                    self._param[img_path] = np.array(list(csv.reader(csvfile))).astype(np.float32)
         #-------------------------------------------------------------------------
-        self.fix_ROI = None
-        if os.path.exists(self.img_path+"/fix_ROI.txt"):
-            with open(self.img_path+"/fix_ROI.txt", "r") as f:
-                self.fix_ROI = json.loads(f.read())
+        self.fix_ROI = {}
+        for img_path in self.dataset_paths:
+            if os.path.exists(img_path+"/fix_ROI.txt"):
+                with open(img_path+"/fix_ROI.txt", "r") as f:
+                    self.fix_ROI[img_path] = json.loads(f.read())
         print("fix_ROI", self.fix_ROI)
         #-------------------------------------------------------------------------
-        
-        self._all_fnames = [os.path.relpath(os.path.join(root, fname), start=self.img_path).replace("\\","/") for root, _dirs, files in os.walk(self.img_path) for fname in files]
+        self._all_fnames = []
+        for img_path in self.dataset_paths:
+            self._all_fnames += [os.path.join(img_path, fname).replace("\\","/") for fname in os.listdir(img_path)]
         PIL.Image.init()
-        self._all_image_fnames = sorted(os.path.join(self.img_path,fname).replace("\\","/")  for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
+        self._all_image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
         if len(self._all_image_fnames) == 0:
             raise IOError('No image files found in the specified path')
         
         self.processed_img_fnames = []
-        self.unprocessed_img_path = ""
-        self.target_img_path = ""
+        self.unprocessed_img_path = {}
+        self.target_img_path = {}
         for f in self._all_image_fnames:
             if 'target.jpg' == f.split('/')[-1]:
-                if self.is_recommand:
-                    self.target_img_path = f
-                    self.processed_img_fnames = [f]
-                else:
-                    continue
-            if 'unprocessed.jpg' == f.split('/')[-1]:
-                self.unprocessed_img_path = f
-                continue
-                
-            self.processed_img_fnames.append(f)
+                self.target_img_path[os.path.dirname(f)] = f
+                self.processed_img_fnames.append(f)
+            elif 'unprocessed.jpg' == f.split('/')[-1]:
+                self.unprocessed_img_path[os.path.dirname(f)] = f
+            else:
+                self.processed_img_fnames.append(f)
                 
         print("unprocessed_img_path", self.unprocessed_img_path)
         print("target_img_path", self.target_img_path)
@@ -220,18 +218,28 @@ class ImageDataset(Dataset):
         A.ToFloat()
     ])
 
-        name = os.path.splitext(os.path.basename(self.img_path))[0]
+        name = os.path.splitext(os.path.basename(self.dataset_paths[0]))[0]
         raw_shape = [len(self.processed_img_fnames)] + list(self._load_raw_image(0).shape)
         # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
         #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
-        assert self.unprocessed_img_path != ""
-        self.unprocessed_img = np.array(self._load_image(self.unprocessed_img_path))
+        assert self.unprocessed_img_path != {}
+        self.unprocessed_img = {}
+        for key, path in self.unprocessed_img_path.items():
+            self.unprocessed_img[key] = np.array(self._load_image(path))
+            self.H, self.W, C = self.unprocessed_img[key].shape
+            
+        assert self.H < self.W
+            
         if self.is_recommand:
-            assert self.target_img_path != ""
-            self.target_img = np.array(self._load_image(self.target_img_path))
-        self.H, self.W, C = self.unprocessed_img.shape
-
+            assert self.target_img_path != {}
+            self.target_img = {}
+            for key, path in self.target_img_path.items():
+                self.target_img[key] = np.array(self._load_image(path))
+                
+            for key in self.unprocessed_img.keys():
+                assert self.unprocessed_img[key].shape == self.target_img[key].shape
+                
     def __len__(self):
         return len(self.processed_img_fnames)
 
@@ -266,38 +274,42 @@ class ImageDataset(Dataset):
         return labels
 
     def _get_image(self, idx):
-        if not self.is_recommand:
-            fname = self.processed_img_fnames[idx]
-            param_idx = int(findall(r"(\d+)", fname)[-1])
-            # print(fname, param_idx)
+        fname = self.processed_img_fnames[idx]
         
-        if self.fix_ROI is not None:
-            random_fix_ROI = random.choice(self.fix_ROI)
+        if not self.is_recommand:
+            param_idx = int(findall(r"(\d+)", fname)[-1])
+            processed_img = np.array(self._load_image(fname)) # uint8 # HWC
+            # print(fname, param_idx)
+        else: 
+            processed_img = self.target_img[os.path.dirname(fname)] # uint8 # HWC
+            param_idx = 0
+        
+        unprocessed_img = self.unprocessed_img[os.path.dirname(fname)] # uint8 # HWC
+        H, W, C = unprocessed_img.shape
+        
+        if self.fix_ROI != {}:
+            random_fix_ROI = random.choice(self.fix_ROI[os.path.dirname(fname)])
             row = random_fix_ROI[0]
             col = random_fix_ROI[1]
         else:
             # get random ROI
-            row = np.random.randint(0, self.H-self.resolution)
-            col = np.random.randint(0, self.W-self.resolution)
+            row = np.random.randint(0, H-self.resolution)
+            col = np.random.randint(0, W-self.resolution)
         
-        unprocessed_img = self.unprocessed_img # uint8 # HWC
         unprocessed_img = unprocessed_img[row:row+self.resolution, col:col+self.resolution, : ]
         unprocessed_img = self.transform(image=unprocessed_img)['image']
         unprocessed_img = np.rint(unprocessed_img * 255).clip(0, 255).astype(np.uint8)
         unprocessed_img = unprocessed_img.transpose(2,0,1) # HWC => CHW
-        
-        if self.is_recommand:
-            processed_img = self.target_img # uint8 # HWC
-            param_idx = 0
-        else:
-            processed_img = np.array(self._load_image(fname)) # uint8 # HWC
             
         processed_img = processed_img[row:row+self.resolution, col:col+self.resolution, : ]
         processed_img = self.transform(image=processed_img)['image']
         processed_img = np.rint(processed_img * 255).clip(0, 255).astype(np.uint8)
         processed_img = processed_img.transpose(2,0,1) # HWC => CHW
         
-        p = np.concatenate([self._param[param_idx], [(row+(self.resolution//2))/self.H, (col+(self.resolution//2))/self.W]], axis=0)
+        if self.is_recommand:
+            p = np.concatenate([self._param[param_idx], [(row+(self.resolution//2))/H, (col+(self.resolution//2))/W]], axis=0)
+        else:
+            p = np.concatenate([self._param[os.path.dirname(fname)][param_idx], [(row+(self.resolution//2))/H, (col+(self.resolution//2))/W]], axis=0)
         
         return unprocessed_img, processed_img, p
         

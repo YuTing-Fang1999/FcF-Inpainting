@@ -249,6 +249,7 @@ class Generator(torch.nn.Module):
         self.z_dim = z_dim
         self.c_dim = c_dim
         self.w_dim = w_dim
+        self.input_param_dim = input_param_dim
         self.img_resolution = img_resolution
         self.img_channels = img_channels
         self.encoder = EncoderNetwork(c_dim=c_dim, z_dim=z_dim, img_resolution=img_resolution, img_channels=img_channels, **encoder_kwargs)
