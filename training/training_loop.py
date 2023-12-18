@@ -150,7 +150,7 @@ def training_loop(
                 getattr(resume_data['G'].encoder, f'b{resolution}').fromrgb.weight=Parameter(getattr(resume_data['G'].encoder, f'b{resolution}').fromrgb.weight[:,:3,...])
                 # resume_data['G'].encoder.b256.fromrgb.weight=Parameter(resume_data['G'].encoder.b256.fromrgb.weight[:,:3,...])
                 resume_data['G'].mapping.fc0.weight=Parameter(resume_data['G'].mapping.fc0.weight[:, :input_param_dim+2]) # param dim contains position(2 more dim)
-                resume_data['G'].tuning_fn.fc1.weight=Parameter(resume_data['G'].tuning_fn.fc1.weight[:, :input_param_dim]) # param dim contains position(2 more dim)
+                resume_data['G'].tuning_fn.fc1.weight=Parameter(resume_data['G'].tuning_fn.fc1.weight[:input_param_dim, :input_param_dim]) # param dim contains position(2 more dim)
 
             for name, module in [('G', G)]:
                 misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
