@@ -15,12 +15,13 @@
                 "--is_recommand",
                 "False", // False代表訓練，True代表推薦
                 "--kimg",
-                "200", // 訓練幾k張圖片，訓練50k，推薦3k
+                "1000", // 訓練幾k張圖片，訓練50k，推薦3k
                 "--resume",
-                "places512.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "ASF.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
                 "--dataset_paths=datasets/ASF_train/colorchecker", // 資料集路徑
                 "--dataset_paths=datasets/ASF_train/out2", // 資料集路徑
-                "--outdir=training_run/ASF_no_ffc_skip_train_512", // 訓練結果的輸出資料夾
+                "--dataset_paths=datasets/ASF_train/dxo", // 資料集路徑
+                "--outdir=training_run/ASF_train", // 訓練結果的輸出資料夾
                 "--input_param_dims",
                 "13", // 輸入參數的維度(要推薦幾個參數)
                 "--batch",
@@ -42,7 +43,7 @@
                 "--eval_img_data",
                 "None",
                 "--snap",
-                "1"
+                "100"
             ]
         },
         {
@@ -58,17 +59,17 @@
                 "--kimg",
                 "2000", // 訓練幾k張圖片，訓練50k，推薦3k
                 "--resume",
-                "ANR.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
-                "--dataset_paths=datasets/ANR_train/ISO3200_colorchecker_ANR_FULL_6", // 資料集路徑
-                "--outdir=training_run/ISO3200_colorchecker_ANR_FULL_6_no_ffc_skip_train_512", // 訓練結果的輸出資料夾
+                "training_run/ISO3200_colorchecker_ANR_FULL_6/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/ANR_train/ISO3200_out2_ANR_FULL_6", // 資料集路徑
+                "--outdir=training_run/out2_ANR_train", // 訓練結果的輸出資料夾
                 "--input_param_dims",
                 "6", // 輸入參數的維度(要推薦幾個參數)
                 "--batch",
-                "8", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                "16", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
 
                 // 下面這些參數可以不用調
                 "--resolution",
-                "512",
+                "256",
                 "--lr",
                 "1e-3",
                 "--gpus",
@@ -86,7 +87,7 @@
             ]
         },
         {
-            "name": "Recommand ASF ANR",
+            "name": "Rec ASF ANR",
             "type": "python",
             "request": "launch",
             "program": "train.py",
@@ -101,10 +102,10 @@
                 "training_run/ISO3200_colorchecker_ANR_FULL_6/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
                 "--resume",
                 "training_run/ASF_train/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
-                "--dataset_paths=datasets/recommend/out2_ours_ANR_ASF", // 資料集路徑
-                "--outdir=target_run/out2_ours_ANR_ASF_test", // 訓練結果的輸出資料夾
+                "--dataset_paths=datasets/recommend/out2_oppo_ANR_ASF", // 資料集路徑
+                "--outdir=target_run/out2_oppo_ANR_ASF_fixROI", // 訓練結果的輸出資料夾
                 "--input_param_dims",
-                "6", // 輸入參數的維度(要推薦幾個參數)
+                "6", // 輸入參數的維度(要推薦幾個參數) 
                 "--input_param_dims",
                 "13", // 輸入參數的維度(要推薦幾個參數)
                 "--batch",
@@ -127,6 +128,86 @@
                 "None",
                 "--snap",
                 "1"
+            ]
+        },
+        {
+            "name": "Rec ASF lab",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--is_recommand",
+                "True", // False代表訓練，True代表推薦
+                "--kimg",
+                "10", // 訓練幾k張圖片，訓練50k，推薦3k
+                "--resume",
+                "training_run/ASF1600_labscene_train/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/recommend/ASF1600_lab2", // 資料集路徑
+                "--outdir=target_run/test", // 訓練結果的輸出資料夾
+                "--input_param_dims",
+                "13", // 輸入參數的維度(要推薦幾個參數)
+                "--batch",
+                "8", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                
+                // 下面這些參數可以不用調
+                "--resolution",
+                "256",
+                "--lr",
+                "1e-3",
+                "--gpus",
+                "1",
+                "--gamma",
+                "10",
+                "--aug",
+                "noaug",
+                "--metrics",
+                "True",
+                "--eval_img_data",
+                "None",
+                "--snap",
+                "1"
+            ]
+        },
+        {
+            "name": "Rec ANR",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--is_recommand",
+                "True", // False代表訓練，True代表推薦
+                "--kimg",
+                "10", // 訓練幾k張圖片，訓練50k，推薦3k
+                "--resume",
+                "training_run/ANR(out2)_train/Model.pkl", // 要使用哪個之前訓練好的模型作為初始網路，places.pkl是原論文的模型
+                "--dataset_paths=datasets/recommend/dxo_ours_ANR", // 資料集路徑
+                "--outdir=target_run/dxo_ours_ANR", // 訓練結果的輸出資料夾
+                "--input_param_dims",
+                "6", // 輸入參數的維度(要推薦幾個參數)
+                "--batch",
+                "8", // batch size代表一次訓練幾筆資料，如果記憶體不夠可以調小
+                
+                // 下面這些參數可以不用調
+                "--resolution",
+                "256",
+                "--lr",
+                "1e-3",
+                "--gpus",
+                "1",
+                "--gamma",
+                "10",
+                "--aug",
+                "noaug",
+                "--metrics",
+                "True",
+                "--eval_img_data",
+                "None",
+                "--snap",
+                "10"
             ]
         }
     ]

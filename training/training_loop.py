@@ -239,7 +239,7 @@ def training_loop(
                 z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
                 img = G(img=img, z=z, c=c, noise_mode='const')
                 dim += G.input_param_dim
-            pred_images.append(img.cpu())
+                pred_images.append(img.cpu())
                 
         pred_images = torch.cat(pred_images)
         # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
@@ -381,7 +381,7 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         
-        if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
+        if cur_tick > 1 and (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
             # Save image snapshot.
             if (rank == 0):
                 best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
@@ -395,7 +395,7 @@ def training_loop(
                             z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
                             img = G(img=img, z=z, c=c, noise_mode='const')
                             dim += G.input_param_dim
-                        pred_images.append(img.cpu())
+                            pred_images.append(img.cpu())
                             
                     pred_images = torch.cat(pred_images)
                     # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
@@ -419,7 +419,7 @@ def training_loop(
                             z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
                             img = G(img=img, z=z, c=c, noise_mode='const')
                             dim += G.input_param_dim
-                        pred_images.append(img.cpu())
+                            pred_images.append(img.cpu())
                             
                     pred_images = torch.cat(pred_images)
                     # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])

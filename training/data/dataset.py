@@ -173,12 +173,19 @@ class ImageDataset(Dataset):
                     # 讀取 CSV 檔案內容
                     self._param[img_path] = np.array(list(csv.reader(csvfile))).astype(np.float32)
         #-------------------------------------------------------------------------
-        self.fix_ROI = {}
+        self.target_ROI = {}
         for img_path in self.dataset_paths:
-            if os.path.exists(img_path+"/fix_ROI.txt"):
-                with open(img_path+"/fix_ROI.txt", "r") as f:
-                    self.fix_ROI[img_path] = json.loads(f.read())
-        print("fix_ROI", self.fix_ROI)
+            if os.path.exists(img_path+"/target_ROI.txt"):
+                with open(img_path+"/target_ROI.txt", "r") as f:
+                    self.target_ROI[img_path] = json.loads(f.read())
+        print("target_ROI", self.target_ROI)
+        
+        self.my_ROI = {}
+        for img_path in self.dataset_paths:
+            if os.path.exists(img_path+"/my_ROI.txt"):
+                with open(img_path+"/my_ROI.txt", "r") as f:
+                    self.my_ROI[img_path] = json.loads(f.read())
+        print("my_ROI", self.my_ROI)
         #-------------------------------------------------------------------------
         self._all_fnames = []
         for img_path in self.dataset_paths:
@@ -194,7 +201,8 @@ class ImageDataset(Dataset):
         for f in self._all_image_fnames:
             if 'target.jpg' == f.split('/')[-1]:
                 self.target_img_path[os.path.dirname(f)] = f
-                self.processed_img_fnames.append(f)
+                if self.is_recommand:
+                    self.processed_img_fnames.append(f)
             elif 'unprocessed.jpg' == f.split('/')[-1]:
                 self.unprocessed_img_path[os.path.dirname(f)] = f
             else:
@@ -287,29 +295,28 @@ class ImageDataset(Dataset):
         unprocessed_img = self.unprocessed_img[os.path.dirname(fname)] # uint8 # HWC
         H, W, C = unprocessed_img.shape
         
-        if self.fix_ROI != {}:
-            random_fix_ROI = random.choice(self.fix_ROI[os.path.dirname(fname)])
-            row = random_fix_ROI[0]
-            col = random_fix_ROI[1]
+        if self.target_ROI != {} and self.my_ROI != {}:
+            idx = random.randint(0, len(self.target_ROI[os.path.dirname(fname)])-1)
+            t_ROI = self.target_ROI[os.path.dirname(fname)][idx]
+            m_ROI = self.my_ROI[os.path.dirname(fname)][idx]
         else:
-            # get random ROI
-            row = np.random.randint(0, H-self.resolution)
-            col = np.random.randint(0, W-self.resolution)
+            t_ROI = [np.random.randint(0, H-self.resolution), np.random.randint(0, W-self.resolution)]
+            m_ROI = t_ROI
         
-        unprocessed_img = unprocessed_img[row:row+self.resolution, col:col+self.resolution, : ]
+        unprocessed_img = unprocessed_img[m_ROI[0]:m_ROI[0]+self.resolution, m_ROI[1]:m_ROI[1]+self.resolution, : ]
         unprocessed_img = self.transform(image=unprocessed_img)['image']
         unprocessed_img = np.rint(unprocessed_img * 255).clip(0, 255).astype(np.uint8)
         unprocessed_img = unprocessed_img.transpose(2,0,1) # HWC => CHW
             
-        processed_img = processed_img[row:row+self.resolution, col:col+self.resolution, : ]
+        processed_img = processed_img[t_ROI[0]:t_ROI[0]+self.resolution, t_ROI[1]:t_ROI[1]+self.resolution, : ]
         processed_img = self.transform(image=processed_img)['image']
         processed_img = np.rint(processed_img * 255).clip(0, 255).astype(np.uint8)
         processed_img = processed_img.transpose(2,0,1) # HWC => CHW
         
         if self.is_recommand:
-            p = np.concatenate([self._param[param_idx], [(row+(self.resolution//2))/H, (col+(self.resolution//2))/W]], axis=0)
+            p = np.concatenate([self._param[param_idx], [(m_ROI[0]+(self.resolution//2))/H, (m_ROI[1]+(self.resolution//2))/W]], axis=0)
         else:
-            p = np.concatenate([self._param[os.path.dirname(fname)][param_idx], [(row+(self.resolution//2))/H, (col+(self.resolution//2))/W]], axis=0)
+            p = np.concatenate([self._param[os.path.dirname(fname)][param_idx], [(m_ROI[0]+(self.resolution//2))/H, (m_ROI[1]+(self.resolution//2))/W]], axis=0)
         
         return unprocessed_img, processed_img, p
         

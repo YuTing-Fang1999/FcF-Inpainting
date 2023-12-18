@@ -57,7 +57,8 @@ class MappingNetwork(torch.nn.Module):
         with torch.autograd.profiler.record_function('input'):
             if self.z_dim > 0:
                 # misc.assert_shape(z, [None, self.z_dim])
-                x = normalize_2nd_moment(z.to(torch.float32))
+                # x = normalize_2nd_moment(z.to(torch.float32))
+                x = z.to(torch.float32)
             if self.c_dim > 0:
                 misc.assert_shape(c, [None, self.c_dim])
                 y = normalize_2nd_moment(self.embed(c.to(torch.float32)))
@@ -78,14 +79,14 @@ class MappingNetwork(torch.nn.Module):
             with torch.autograd.profiler.record_function('broadcast'):
                 x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
 
-        # Apply truncation.
-        if truncation_psi != 1:
-            with torch.autograd.profiler.record_function('truncate'):
-                assert self.w_avg_beta is not None
-                if self.num_ws is None or truncation_cutoff is None:
-                    x = self.w_avg.lerp(x, truncation_psi)
-                else:
-                    x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
+        # # Apply truncation.
+        # if truncation_psi != 1:
+        #     with torch.autograd.profiler.record_function('truncate'):
+        #         assert self.w_avg_beta is not None
+        #         if self.num_ws is None or truncation_cutoff is None:
+        #             x = self.w_avg.lerp(x, truncation_psi)
+        #         else:
+        #             x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
         return x
 
 #----------------------------------------------------------------------------
