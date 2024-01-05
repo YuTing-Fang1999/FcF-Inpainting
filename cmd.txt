@@ -1,17 +1,14 @@
 pip install https://github.com/podgorskiy/dnnlib/releases/download/0.0.1/dnnlib-0.0.1-py3-none-any.whl
+conda activate yuting
 
-c7_region3_origin_place_pkl_20k_img
-python train.py --is_recommand True --input_param_dim 7 --lr 1e-3 --outdir=target_run --run_dir c7_region3_origin_place_pkl_20k_img --img_data=datasets/c7_gain3_origin --gpus 1 --kimg 3 --gamma 10 --aug noaug --metrics True --eval_img_data None --batch 2 --resume "training_run\1-gain3_train place.pkl\network-snapshot-000020.pkl" --snap 1 
+python train.py --is_recommand False ^
+--kimg 1 ^
+--resume ASF.pkl ^
+--dataset_paths=datasets/ASF16-32_train/67 ^
+--outdir=training_run/ASF_67 ^
+--batch 16 ^
+--input_param_dims 13 ^
+--snap 50 ^
+--resolution 256 --lr 1e-3 --gpus 1 --gamma 10 --aug noaug --metrics True --eval_img_data None 
 
-c7_region3_origin_place_pkl_52k_img
-
-c7_region3_origin_place_pkl_104k_img
-
-
-Train from gain2.pkl (100k img)
-
-Train from place.pkl (20k img)
-Train from place.pkl (50k img)
-Train from place.pkl (100k img)
-
-下次train時記得改map num layers
+python train.py --is_recommand True --kimg 1 --resume training_run/ASF_67/Model.pkl --resume training_run/ASF_67/Model.pkl --dataset_paths=datasets/recommend/ANR_67 --outdir=target_run/ANR_ASF_67 --batch 16 --input_param_dims 13 --resolution 256 --lr 1e-3 --snap 50 --gpus 1 --gamma 10 --aug noaug --metrics True --eval_img_data None 

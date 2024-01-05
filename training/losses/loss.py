@@ -51,22 +51,32 @@ class StyleGAN2Loss(Loss):
         return img, ws
     
 
-    def accumulate_gradients(self, phase, noisy_img, denoised_img, tuning_param, real_c, gen_c, sync, gain):
-        # print('phase: ', phase)
-        with torch.autograd.profiler.record_function('Gmain_forward'):
-            gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
-            loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
-            if not self.is_recommand:
-                loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
-                loss_Gmain = loss_pl + loss_rec
-                training_stats.report('Loss/G/rec_loss', loss_rec)
-            else:
-                loss_Gmain = loss_pl
+    def accumulate_gradients(self, phase, noisy_img, denoised_img, tuning_param, real_c, gen_c, sync, gain, state="train"):
+        if state == "train":
+            # print('phase: ', phase)
+            with torch.autograd.profiler.record_function('Gmain_forward'):
+                gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
+                loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
+                if not self.is_recommand:
+                    loss_rec = 10 * torch.nn.functional.l1_loss(gen_img, denoised_img)
+                    loss_Gmain = loss_pl + loss_rec
+                    training_stats.report('Loss/G/rec_loss', loss_rec)
+                else:
+                    loss_Gmain = loss_pl
+                    
+                # print('train loss_Gmain: ', loss_pl)
+                training_stats.report('Loss/G/pl_loss', loss_pl)
+                training_stats.report('Loss/G/main_loss', loss_Gmain)
                 
-            training_stats.report('Loss/G/pl_loss', loss_pl)
-            training_stats.report('Loss/G/main_loss', loss_Gmain)
+            with torch.autograd.profiler.record_function('Gmain_backward'):
+                loss_Gmain.mul(gain).backward()
                 
-        with torch.autograd.profiler.record_function('Gmain_backward'):
-            loss_Gmain.mul(gain).backward()
+        elif state == "val":
+            with torch.autograd.profiler.record_function('Gmain_forward'):
+                gen_img, _ = self.run_G(noisy_img, tuning_param, gen_c, sync=sync) # May get synced by Gpl.
+                loss_pl = self.LPIPS.forward(gen_img, denoised_img).mean()
+                # print('val loss_Gmain: ', loss_pl)
+                
+                training_stats.report('Loss/val/pl_loss', loss_pl)
 
 #----------------------------------------------------------------------------

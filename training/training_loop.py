@@ -100,6 +100,7 @@ def training_loop(
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
+    no_updates_times = 0
     best_loss_Gmain = 1e8
     # Initialize.
     start_time = time.time()
@@ -117,22 +118,41 @@ def training_loop(
     # Load training set.
     if rank == 0:
         print(Fore.GREEN + 'Loading training set...')
-    training_set = dnnlib.util.construct_class_by_name(**training_set_kwargs) # subclass of training.dataset.Dataset
-    training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed)
-    training_loader = torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+        
+    if is_recommand:
+        training_set = dnnlib.util.construct_class_by_name(**training_set_kwargs) # subclass of training.dataset.Dataset
+        training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed)
+        training_loader = torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+        training_set_iterator = iter(training_loader)
+        full_dataset=training_set
+    else:
+        full_dataset = dnnlib.util.construct_class_by_name(**training_set_kwargs) # subclass of training.dataset.Dataset
+        num_train = int(len(full_dataset) * 0.8)
+        num_val = len(full_dataset) - num_train
+
+        # Split the data set into training set and validation set
+        training_set, val_set = torch.utils.data.random_split(full_dataset, [num_train, num_val])
+        
+        training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed)
+        training_loader = torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+        training_set_iterator = iter(training_loader)
+        
+        val_set_sampler = misc.InfiniteSampler(dataset=val_set, rank=rank, num_replicas=num_gpus, seed=random_seed)
+        val_loader = torch.utils.data.DataLoader(dataset=val_set, sampler=val_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+        val_set_iterator = iter(val_loader)
     
-    training_set_iterator = iter(training_loader)
+    
     if rank == 0:
         print()
         print(Fore.GREEN + 'Num images: ', len(training_set))
-        print(Fore.GREEN + 'Image shape:', training_set.image_shape)
-        print(Fore.GREEN + 'Label shape:', training_set.label_shape)
+        print(Fore.GREEN + 'Image shape:', full_dataset.image_shape)
+        print(Fore.GREEN + 'Label shape:', full_dataset.label_shape)
         print()
 
     # Construct networks.
     if rank == 0:
         print('Constructing networks...')
-    common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    common_kwargs = dict(c_dim=full_dataset.label_dim, img_resolution=full_dataset.resolution, img_channels=full_dataset.num_channels)
 
     Gs = []
     # Resume from existing pickle.
@@ -292,7 +312,7 @@ def training_loop(
             phase_denoised_imgs = phase_denoised_imgs.split(batch_gpu)
             phase_tuning_param = phase_tuning_param.to(device).split(batch_gpu)
             phase_real_c = phase_real_cs.to(device).split(batch_gpu)
-            all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
+            all_gen_c = [full_dataset.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size)]
 
@@ -323,7 +343,6 @@ def training_loop(
             if phase.end_event is not None:
                 phase.end_event.record(torch.cuda.current_stream(device))
 
-
         # Update state.
         cur_nimg += batch_size
         batch_idx += 1
@@ -336,6 +355,32 @@ def training_loop(
         done = (cur_nimg >= total_kimg * 1000)
         if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000 * image_snapshot_ticks):
             continue
+        
+        # validate
+        if not is_recommand:
+            for val_num in range(20):
+                # Fetch val data.
+                with torch.autograd.profiler.record_function('data_fetch'):
+                    phase_noisy_imgs, phase_denoised_imgs, phase_tuning_param, phase_real_cs = next(val_set_iterator)
+                    phase_noisy_imgs = (phase_noisy_imgs.to(device).to(torch.float32) / 127.5 - 1)
+                    phase_denoised_imgs = (phase_denoised_imgs.to(device).to(torch.float32) / 127.5 - 1)
+                    phase_noisy_imgs = phase_noisy_imgs.split(batch_gpu)
+                    phase_denoised_imgs = phase_denoised_imgs.split(batch_gpu)
+                    phase_tuning_param = phase_tuning_param.to(device).split(batch_gpu)
+                    phase_real_c = phase_real_cs.to(device).split(batch_gpu)
+                    all_gen_c = [full_dataset.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
+                    all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
+                    all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size)]
+
+                # Execute val phases.
+                for phase, phase_gen_c in zip(phases, all_gen_c):
+                    phase.module.requires_grad_(False)
+
+                    # Accumulate gradients over multiple rounds.
+                    for round_idx, (noisy_img, denoised_img, tuning_param, real_c, gen_c) in enumerate(zip(phase_noisy_imgs, phase_denoised_imgs, phase_tuning_param, phase_real_c, phase_gen_c)):
+                        sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
+                        gain = phase.interval
+                        loss.accumulate_gradients(phase=phase.name, noisy_img=noisy_img, denoised_img=denoised_img, tuning_param=tuning_param, real_c=real_c, gen_c=gen_c, sync=sync, gain=gain, state="val")
 
         # Print status line, accumulating the same information in stats_collector.
         tick_end_time = time.time()
@@ -382,36 +427,14 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         
-        if cur_tick > 1 and (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
-            # Save image snapshot.
-            if (rank == 0):
-                best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
-                
-                if is_recommand:
-                    pred_images = []
-                    for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
-                        img = noisy_img
-                        dim = 0
-                        for i, G in enumerate(Gs):
-                            z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
-                            img = G(img=img, z=z, c=c, noise_mode='const')
-                            dim += G.input_param_dim
-                            pred_images.append(img.cpu())
-                            
-                    pred_images = torch.cat(pred_images)
-                    # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
-                    save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
-                    print('save best txt', stats_dict["Loss/G/main_loss"]['mean'])
-                    with open(os.path.join(run_dir, run_dir.split("/")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
-                        dim = 0
-                        param_tuned = []
-                        for G in Gs:
-                            param_tuned.append(G.tuning_fn(sample_tuning_param[0][:, dim:dim+G.input_param_dim]).cpu())
-                            dim += G.input_param_dim
-                        param_tuned = np.concatenate(param_tuned, axis=1)
-                        param_tuned = [round(num, 4) for num in param_tuned[0].tolist()]
-                        f.write(str(param_tuned))
-                else:
+        if (rank == 0):
+            if not is_recommand:
+                print('train:', stats_dict["Loss/G/main_loss"])
+                print('val:', stats_dict["Loss/val/pl_loss"])
+                if (stats_dict["Loss/val/pl_loss"]['mean']<best_loss_Gmain): # or (stats_dict["Loss/G/rec_loss"]['mean']<best_rec_loss):
+                    # Save image snapshot.
+                    if cur_tick>0: best_loss_Gmain = stats_dict["Loss/val/pl_loss"]['mean']
+                    no_updates_times=0
                     pred_images = []
                     for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
                         img = noisy_img
@@ -426,9 +449,10 @@ def training_loop(
                     # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
                     save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg//1000:06d}'),  label='PRED', drange=[-1,1])
 
-                    print('save best model', stats_dict["Loss/G/main_loss"]['mean'])
+                    print('save best model', best_loss_Gmain)
                     snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
                     
+                    assert len(Gs) == 1
                     for name, module in [('G', Gs[0])]:
                         if module is not None:
                             if num_gpus > 1:
@@ -440,6 +464,47 @@ def training_loop(
                 
                     with open(snapshot_pkl, 'wb') as f:
                         pickle.dump(snapshot_data, f)
+                else:
+                    no_updates_times += 1
+            else:
+                if (stats_dict["Loss/G/main_loss"]['mean']<best_loss_Gmain):
+                    if cur_tick>0: best_loss_Gmain = stats_dict["Loss/G/main_loss"]['mean']
+                    pred_images = []
+                    for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c):
+                        img = noisy_img
+                        dim = 0
+                        for i, G in enumerate(Gs):
+                            z = torch.cat((tuning_param[:, dim:dim+G.input_param_dim], tuning_param[:, -2:]), 1)
+                            img = G(img=img, z=z, c=c, noise_mode='const')
+                            dim += G.input_param_dim
+                            pred_images.append(img.cpu())
+                            
+                    pred_images = torch.cat(pred_images)
+                    # pred_images = torch.cat([G(img=noisy_img, z=tuning_param, c=c, noise_mode='const').cpu() for noisy_img, tuning_param, c in zip(sample_noisy_img, sample_tuning_param, grid_c)])
+                    save_image_grid(pred_images.detach().numpy(), os.path.join(run_dir, f'run_{cur_nimg:06d}'), label='PRED', drange=[-1,1])
+                    print('save best txt', best_loss_Gmain)
+                    with open(os.path.join(run_dir, run_dir.split("/")[-1]+"_"+str(cur_tick)+'.txt'), 'w') as f:
+                        dim = 0
+                        param_tuned = []
+                        for G in Gs:
+                            param_tuned.append(G.tuning_fn(sample_tuning_param[0][:, dim:dim+G.input_param_dim]).cpu())
+                            dim += G.input_param_dim
+                        param_tuned = np.concatenate(param_tuned, axis=1)
+                        param_tuned = [round(num, 4) for num in param_tuned[0].tolist()]
+                        f.write(str(param_tuned))
+                        
+                    if len(Gs) == 1:
+                        print('save best model', best_loss_Gmain)
+                        snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
+                        for name, module in [('G', Gs[0])]:
+                            if module is not None:
+                                if num_gpus > 1:
+                                    misc.check_ddp_consistency(module, ignore_regex=r'.*\.w_avg')
+                                module = copy.deepcopy(module).eval().requires_grad_(False).cpu()
+                            snapshot_data[name] = module
+                            del module # conserve memory
+                        snapshot_pkl = os.path.join(run_dir, f'Model.pkl')
+        
         del snapshot_data # conserve memory
 
         # Update logs.
@@ -467,6 +532,9 @@ def training_loop(
         if rank == 0:
             sys.stdout.flush()
         if done:
+            break
+        if no_updates_times >= 4:
+            print('no updates, so break')
             break
 
     # Done.

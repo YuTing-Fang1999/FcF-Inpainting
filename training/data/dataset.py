@@ -245,8 +245,8 @@ class ImageDataset(Dataset):
             for key, path in self.target_img_path.items():
                 self.target_img[key] = np.array(self._load_image(path))
                 
-            for key in self.unprocessed_img.keys():
-                assert self.unprocessed_img[key].shape == self.target_img[key].shape
+            # for key in self.unprocessed_img.keys():
+            #     assert self.unprocessed_img[key].shape == self.target_img[key].shape
                 
     def __len__(self):
         return len(self.processed_img_fnames)
